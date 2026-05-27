@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual env
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# Env
+.env
+
+# SQLite / runtime DB
+*.db
+*.sqlite3
+
+# SQLAlchemy cache / migrations temp
+*.log
+
+# Build
+build/
+dist/
+*.egg-info/
+
+# Frontend future
+node_modules/
+
+# OS
+.DS_Store

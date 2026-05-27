@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+<body>
+
+<div id="plot"></div>
+
+<script>
+
+window.onload = () => {
+
+    Plotly.newPlot(
+        "plot",
+        [{
+            x:[],
+            y:[],
+            mode:"lines",
+            hovertemplate:
+                "Freq: %{x:.3f} MHz<br>" +
+                "PSD: %{y:.2f} dB/Hz" +
+                "<extra></extra>",
+            line:{
+                color:"#00ff99",
+                width:2
+            }
+        }],
+        {
+            title:"RF Spectrum Analyzer",
+            paper_bgcolor:"#0b0f14",
+            plot_bgcolor:"#111827",
+            font:{color:"#ddd"},
+            hovermode:"x",
+            xaxis:{
+                title:"Frequency (MHz)",
+                gridcolor:"#2a3441",
+                tickformat:".2f"
+            },
+            yaxis:{
+                title:"PSD (dB/Hz)",
+                gridcolor:"#2a3441",
+                tickformat:".1f"
+            }
+        }
+    );
+
+    let ws = null;
+
+    function connect(){
+
+        if(ws){
+            ws.close();
+        }
+
+        ws = new WebSocket(
+            "ws://localhost:8000/rf/stream"
+        );
+
+        ws.onopen = () => {
+            console.log(
+                "stream connected"
+            );
+        };
+
+        ws.onclose = () => {
+            console.log(
+                "stream closed"
+            );
+        };
+
+        ws.onmessage = (event)=>{
+
+            const data =
+                JSON.parse(
+                    event.data
+                );
+
+            Plotly.update(
+                "plot",
+                {
+                    x:[
+                        data.freq_hz.map(
+                            f => f / 1e6
+                        )
+                    ],
+                    y:[
+                        data.power_db
+                    ]
+                }
+            );
+        };
+    }
+
+    connect();
+};
+
+</script>
+
+</body>
+</html>
