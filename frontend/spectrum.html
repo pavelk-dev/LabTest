@@ -1,101 +1,337 @@
 <!DOCTYPE html>
 <html>
-
+<head>
+<meta charset="UTF-8">
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+<style>
+body{margin:0;background:#0b0f14;color:#ddd;font-family:Arial,sans-serif;}
+#toolbar{min-height:50px;display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:8px 10px;background:#111827;border-bottom:1px solid #2a3441;}
+#toolbar input,#toolbar select{width:80px;background:#0b0f14;border:1px solid #374151;color:#00ff99;padding:5px;}
+#toolbar button{background:#1f2937;color:white;border:1px solid #374151;padding:6px 12px;cursor:pointer;}
+#waveFields{display:flex;gap:6px;flex-wrap:wrap;}
+#plots{width:100vw;height:calc(100vh - 70px);display:flex;flex-direction:column;}
+#plot{height:45%;}
+#waterfall{height:55%;display:none}
+</style>
+</head>
 
 <body>
 
+<div id="toolbar">
+<select id="waveType"></select>
+<div id="waveFields"></div>
+
+<button id="addComponent">Add</button>
+
+<span>Center</span>
+<input id="center" value="100e6">
+
+<span>Span</span>
+<input id="span" value="20e6">
+
+<span>Ref</span>
+<input id="ref" value="0">
+
+<span>Range</span>
+<input id="range" value="100">
+
+<span>RBW</span>
+<input id="rbw" value="5e3">
+
+<button id="applyY">Apply</button>
+<button id="toggleWaterfall">Waterfall ON</button>
+</div>
+
+<div id="plots">
 <div id="plot"></div>
+<div id="waterfall"></div>
+</div>
 
 <script>
 
-window.onload = () => {
+window.onload = async () => {
 
-    Plotly.newPlot(
-        "plot",
-        [{
-            x:[],
-            y:[],
-            mode:"lines",
-            hovertemplate:
-                "Freq: %{x:.3f} MHz<br>" +
-                "PSD: %{y:.2f} dB/Hz" +
-                "<extra></extra>",
-            line:{
-                color:"#00ff99",
-                width:2
-            }
-        }],
-        {
-            title:"RF Spectrum Analyzer",
-            paper_bgcolor:"#0b0f14",
-            plot_bgcolor:"#111827",
-            font:{color:"#ddd"},
-            hovermode:"x",
-            xaxis:{
-                title:"Frequency (MHz)",
-                gridcolor:"#2a3441",
-                tickformat:".2f"
-            },
-            yaxis:{
-                title:"PSD (dB/Hz)",
-                gridcolor:"#2a3441",
-                tickformat:".1f"
-            }
-        }
-    );
+let currentFs=null;
+let componentDefs={};
 
-    let ws = null;
+let waterfallData=[];
+const MAX_ROWS=150;
+let waterfallEnabled=false;
 
-    function connect(){
+const spectrumLayout={
+title:"Spectrum",
+margin:{l:80,r:30,t:40,b:50},
+paper_bgcolor:"#0b0f14",
+plot_bgcolor:"#111827",
+font:{color:"#ddd",family:"Arial"},
+hovermode:"x",
+xaxis:{title:"Frequency (MHz)",gridcolor:"#2a3441",tickformat:".2f"},
+yaxis:{title:"PSD (dB/Hz)",gridcolor:"#2a3441",tickformat:".1f",range:[-120,-80],autorange:false}
+};
 
-        if(ws){
-            ws.close();
-        }
+const waterfallLayout={
+title:"Spectrogram",
+margin:{l:80,r:30,t:40,b:60},
+paper_bgcolor:"#0b0f14",
+plot_bgcolor:"#111827",
+font:{color:"#ddd",family:"Arial"},
+xaxis:{title:"Frequency (MHz)",gridcolor:"#2a3441",tickformat:".2f"},
+yaxis:{title:"Time",showticklabels:false,gridcolor:"#2a3441"}
+};
 
-        ws = new WebSocket(
-            "ws://localhost:8000/rf/stream"
+Plotly.newPlot("plot",
+[{
+x:[],
+y:[],
+mode:"lines",
+line:{color:"#00ff99",width:2}
+}],
+spectrumLayout
+);
+
+Plotly.newPlot("waterfall",
+[{
+z:[[0]],
+x:[],
+type:"heatmap",
+colorscale:"Turbo",
+zmin:-120,
+zmax:0,
+showscale:true,
+colorbar:{title:"dB/Hz"}
+}],
+waterfallLayout
+);
+
+function rbwToFFT(fs,rbw){
+return 2**Math.round(Math.log2(fs/rbw));
+}
+
+function getRef(){
+return Number(document.getElementById("ref").value);
+}
+
+function getRange(){
+return Number(document.getElementById("range").value);
+}
+
+function updateYAxis(){
+
+const ref=getRef();
+const range=getRange();
+
+spectrumLayout.yaxis.range=[ref-range,ref];
+
+Plotly.relayout(
+"plot",
+{"yaxis.range":spectrumLayout.yaxis.range}
+);
+
+Plotly.relayout(
+"waterfall",
+{
+}
+);
+}
+
+async function applySettings(){
+
+updateYAxis();
+
+const center=Number(document.getElementById("center").value);
+const span=Number(document.getElementById("span").value);
+const rbw=Number(document.getElementById("rbw").value);
+
+const fft=rbwToFFT(span,rbw);
+
+await fetch(
+"http://localhost:8000/rf/settings",
+{
+method:"POST",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify({
+center_freq:center,
+sample_rate:span,
+fft_size:fft,
+vbw:0.2
+})
+}
+);
+}
+
+async function loadComponents(){
+
+const res=await fetch("http://localhost:8000/rf/components");
+componentDefs=await res.json();
+
+const sel=document.getElementById("waveType");
+sel.innerHTML="";
+
+for(const name in componentDefs){
+const opt=document.createElement("option");
+opt.value=name;
+opt.textContent=name;
+sel.appendChild(opt);
+}
+
+renderFields();
+}
+
+function renderFields(){
+
+const type=document.getElementById("waveType").value;
+const div=document.getElementById("waveFields");
+
+div.innerHTML="";
+
+componentDefs[type].forEach(field=>{
+
+const wrapper=document.createElement("div");
+wrapper.style.display="flex";
+wrapper.style.alignItems="center";
+wrapper.style.gap="4px";
+
+const label=document.createElement("span");
+label.textContent=field.name;
+label.style.color="#aaa";
+label.style.fontSize="12px";
+
+const input=document.createElement("input");
+input.id="field_"+field.name;
+input.value=field.default ?? "";
+input.placeholder=field.name;
+
+wrapper.appendChild(label);
+wrapper.appendChild(input);
+div.appendChild(wrapper);
+});
+}
+
+document.getElementById("waveType").onchange=renderFields;
+
+document.getElementById("addComponent").onclick=async()=>{
+
+const type=document.getElementById("waveType").value;
+const params={};
+
+componentDefs[type].forEach(field=>{
+
+const raw=document.getElementById("field_"+field.name).value;
+
+if(raw===""||raw==="null"){
+params[field.name]=null;
+}
+else{
+const num=Number(raw);
+params[field.name]=Number.isNaN(num)?raw:num;
+}
+});
+
+await fetch(
+"http://localhost:8000/rf/components",
+{
+method:"POST",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify({
+type:type,
+params:params
+})
+}
+);
+};
+
+document.getElementById("applyY").onclick=applySettings;
+document.getElementById(
+    "toggleWaterfall"
+).onclick=()=>{
+
+    waterfallEnabled=
+        !waterfallEnabled;
+
+    const wf=
+        document.getElementById(
+            "waterfall"
         );
 
-        ws.onopen = () => {
-            console.log(
-                "stream connected"
-            );
-        };
+    const plot=
+        document.getElementById(
+            "plot"
+        );
 
-        ws.onclose = () => {
-            console.log(
-                "stream closed"
-            );
-        };
+    const btn=
+        document.getElementById(
+            "toggleWaterfall"
+        );
 
-        ws.onmessage = (event)=>{
+    if(waterfallEnabled){
 
-            const data =
-                JSON.parse(
-                    event.data
-                );
+        wf.style.display= "block";
+        plot.style.height= "45%";
+        wf.style.height= "55%";
+        btn.textContent= "Waterfall ON";}
 
-            Plotly.update(
-                "plot",
-                {
-                    x:[
-                        data.freq_hz.map(
-                            f => f / 1e6
-                        )
-                    ],
-                    y:[
-                        data.power_db
-                    ]
-                }
-            );
-        };
+    else{
+
+        wf.style.display= "none";
+        plot.style.height= "100%";
+        btn.textContent= "Waterfall OFF";
     }
 
-    connect();
+    Plotly.Plots.resize("plot");
+
+    if(waterfallEnabled){Plotly.Plots.resize("waterfall");}
+};
+await loadComponents();
+
+const ws=new WebSocket("ws://localhost:8000/rf/stream");
+
+ws.onmessage=(event)=>{
+
+const data=JSON.parse(event.data);
+
+currentFs=data.sample_rate;
+
+const freqMHz=data.freq_hz.map(f=>f/1e6);
+
+Plotly.react(
+"plot",
+[{
+x:freqMHz,
+y:data.power_db,
+mode:"lines",
+line:{color:"#00ff99",width:2}
+}],
+spectrumLayout
+);
+
+waterfallData.push(data.power_db);
+
+if(waterfallData.length>MAX_ROWS){
+waterfallData.shift();
+}
+
+if(
+    waterfallEnabled
+){
+    Plotly.react(
+    "waterfall",
+    [{
+        z:waterfallData,
+        x:freqMHz,
+        type:"heatmap",
+        colorscale:"Turbo",
+        zmin:getRef()-getRange(),
+        zmax:getRef(),
+        showscale:true,
+        colorbar:{title:"dB/Hz"}
+    }],
+    waterfallLayout
+    );
+}
+};
 };
 
 </script>
-
 </body>
 </html>

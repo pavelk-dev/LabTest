@@ -118,13 +118,13 @@ class IQWaveform(Waveform):
         samples: np.ndarray,
         sample_rate: float,
         name: str = "IQWaveform",
-        freq_offset: float = 0.0,
+        freq: float = 0.0,
         amplitude: float = 1.0,
     ):
         self.name = name
         self.sample_rate = sample_rate
         self._samples = np.asarray(samples, dtype=np.complex128)
-        self.freq_offset = freq_offset   # Hz — applied as complex rotation
+        self.freq = freq   # Hz — applied as complex rotation
         self.amplitude = amplitude
 
     @classmethod

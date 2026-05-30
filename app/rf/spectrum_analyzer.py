@@ -3,31 +3,29 @@ from app.rf.windowing import window
 from app.rf.waveform import IQData
 class SpectrumAnalyzer:
 
-    def __init__(self, IQ : IQData, vbw_alpha: float = 0.05):
+    def __init__(self, vbw_alpha: float = 0.05):
 
-        self.iq = IQ.samples
-        self.fs = IQ.sample_rate
-        self.n = len(self.iq)
         self.vbw_alpha = vbw_alpha
         self._avg_psd = None
 
-    def fft(self,window_name=None):
-        x = window(self.iq, window_name)
-
+    def fft(self,iq = IQData, window_name=None):
+        x = window(iq.samples, window_name)
         fft = np.fft.fftshift(np.fft.fft(x))
-        psd = (np.abs(fft) ** 2) / (self.fs * len(x))
+        psd = (np.abs(fft) ** 2) / (iq.sample_rate * len(x))
 
-        if self._avg_psd is None:
+        if self._avg_psd is None or len(psd) != len(self._avg_psd):
+            self._avg_psd = psd.copy()
+        else:
+            self._avg_psd = (
+                    self.vbw_alpha * psd
+                    + (1 - self.vbw_alpha)
+                    * self._avg_psd
+            )
 
-            self._avg_psd = psd
-
-            a = self.vbw_alpha
-
-            self._avg_psd = (a * psd + (1 - a) * self._avg_psd)
 
         psd_db = 10 * np.log10(self._avg_psd + 1e-20)
 
-        freqs = np.fft.fftshift(np.fft.fftfreq(len(x),d=1 / self.fs))
+        freqs = np.fft.fftshift(np.fft.fftfreq(len(x),d=1 / iq.sample_rate))
 
         return freqs, psd_db
 

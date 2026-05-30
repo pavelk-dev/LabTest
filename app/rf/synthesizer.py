@@ -18,9 +18,11 @@ Usage
 
 from __future__ import annotations
 import numpy as np
+from scipy.signal import butter, sosfiltfilt
 from typing import List, Generator
 import json
 import threading
+from app.rf.components import AWGNWaveform
 
 from .waveform import Waveform, IQData
 
@@ -70,7 +72,9 @@ class Synthesizer:
         time_sec=0,
         sample_rate=20e6,
         N=4096,
+        center_freq = 0
     ):
+        self.center_freq = center_freq
         self.sample_rate = sample_rate
         self.time_sec = time_sec
         self.N = N
@@ -133,7 +137,7 @@ class Synthesizer:
         for c in self._components:
             if not c["enabled"]:
                 continue
-            iq = c["waveform"].generate_chunk(N, fs, t0=0)
+            iq = c["waveform"].generate_chunk(N, fs, t0=time_sec)
             composite += iq.samples
             active_names.append(c["waveform"].name)
 
@@ -173,6 +177,10 @@ class Synthesizer:
             N=None,
             fs=None
     ):
+        visible_min = (self.center_freq - self.sample_rate / 2)
+
+        visible_max = (self.center_freq + self.sample_rate / 2)
+
 
         N = N or self.N
         fs = fs or self.sample_rate
@@ -180,20 +188,44 @@ class Synthesizer:
         t0 = self.time_sec
 
         composite = np.zeros(N,dtype=np.complex128)
+        awgn = AWGNWaveform(freq = self.center_freq)
+        composite += awgn.generate_chunk(N, fs, 0).samples
 
         active_names = []
 
         components = list(self._components)
-
         for c in components:
 
             if not c["enabled"]:
                 continue
 
-            iq = c["waveform"].generate_chunk(N,fs,t0)
+            wf = c["waveform"]
+            wf_max = wf.freq + wf.bw/2
+            wf_min = wf.freq - wf.bw/2
+            bb_freq = wf.freq - self.center_freq
+            if  wf_min > visible_max or wf_max < visible_min:
+                continue
+            elif wf_min >= visible_min and wf_max <= visible_max:
 
-            composite += iq.samples
+                iq = (wf.generate_chunk(N,fs,t0,bb_freq=bb_freq)).samples
+            else:
+                max_edge = max(abs(bb_freq + wf.bw / 2),abs(bb_freq - wf.bw / 2))
+                k = max(2,int(np.ceil(2 * max_edge / fs)))
 
+                fs_hi = k * fs
+                N_hi = k * N
+
+
+                iq = wf.generate_chunk(N_hi, fs_hi, t0, bb_freq=bb_freq)
+
+                cutoff = 0.9 * fs / 2
+
+                sos = butter(6, cutoff, btype="low", fs=fs_hi, output="sos")
+                filtered = sosfiltfilt(sos, iq.samples)
+
+                iq = filtered[::k][:N]
+
+            composite += iq
             active_names.append(c["waveform"].name)
 
         self.time_sec += (N / fs)

@@ -10,11 +10,7 @@ class RFSession:
 
         self.synth = Synthesizer(sample_rate=fs,N=n)
 
-        self.synth.add(AWGNWaveform(noise_density=0.02)
-
-        )
-
-        self.analyzer = SpectrumAnalyzer(self.synth.next_chunk(n,fs).iq, vbw_alpha=0.2)
+        self.analyzer = SpectrumAnalyzer(vbw_alpha=0.2)
         self.vbw = 0.2
         self.window = "hann"
 

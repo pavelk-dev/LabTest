@@ -1,11 +1,4 @@
 from fastapi import FastAPI
-from app.api.jobs import router as jobs_router
-from app.api.test_definition import (
-    router as test_definitions_router
-)
-from app.api.rf_scene import (
-    router as rf_scene_router
-)
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.rf import router as rf_router
 
