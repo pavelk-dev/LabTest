@@ -72,7 +72,7 @@ class Synthesizer:
         time_sec=0,
         sample_rate=20e6,
         N=4096,
-        center_freq = 0
+        center_freq = 0,
     ):
         self.center_freq = center_freq
         self.sample_rate = sample_rate
@@ -145,32 +145,6 @@ class Synthesizer:
 
         return IQRecording(iq=IQData(composite, fs), N=N, component_names=active_names,)
 
-    def stream(self,chunk_size: int = 4096) -> Generator[IQRecording, None, None]:
-
-        fs = self.sample_rate
-        t0 = 0.0
-
-        while True:
-
-            composite = np.zeros(chunk_size,dtype=np.complex128)
-
-            active_names = []
-
-            for c in self._components:
-
-                if not c["enabled"]:
-                    continue
-
-                wf = c["waveform"]
-
-                iq = wf.generate_chunk(chunk_size,fs,t0)
-
-                composite += iq.samples
-                active_names.append(wf.name)
-
-            yield IQRecording(iq=IQData(composite,fs),component_names=active_names)
-
-            t0 += (chunk_size/ fs)
 
     def next_chunk(
             self,
@@ -227,6 +201,7 @@ class Synthesizer:
 
             composite += iq
             active_names.append(c["waveform"].name)
+
 
         self.time_sec += (N / fs)
 

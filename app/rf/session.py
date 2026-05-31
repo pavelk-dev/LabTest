@@ -9,7 +9,8 @@ class RFSession:
     def __init__(self):
 
         self.synth = Synthesizer(sample_rate=fs,N=n)
-
+        self.latest_recording = None
+        self.running = True
         self.analyzer = SpectrumAnalyzer(vbw_alpha=0.2)
         self.vbw = 0.2
         self.window = "hann"

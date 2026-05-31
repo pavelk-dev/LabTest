@@ -38,7 +38,9 @@ body{margin:0;background:#0b0f14;color:#ddd;font-family:Arial,sans-serif;}
 
 <span>RBW</span>
 <input id="rbw" value="5e3">
-
+<button id="runBtn">
+STOP
+</button>
 <button id="applyY">Apply</button>
 <button id="toggleWaterfall">Waterfall ON</button>
 </div>
@@ -52,11 +54,13 @@ body{margin:0;background:#0b0f14;color:#ddd;font-family:Arial,sans-serif;}
 
 window.onload = async () => {
 
+let running=true;
 let currentFs=null;
 let componentDefs={};
 
 let waterfallData=[];
-const MAX_ROWS=150;
+let waterfallTimes=[];
+const MAX_ROWS=100;
 let waterfallEnabled=false;
 
 const spectrumLayout={
@@ -77,7 +81,7 @@ paper_bgcolor:"#0b0f14",
 plot_bgcolor:"#111827",
 font:{color:"#ddd",family:"Arial"},
 xaxis:{title:"Frequency (MHz)",gridcolor:"#2a3441",tickformat:".2f"},
-yaxis:{title:"Time",showticklabels:false,gridcolor:"#2a3441"}
+yaxis:{title:"Time", tickformat:".2f", gridcolor:"#2a3441"}
 };
 
 Plotly.newPlot("plot",
@@ -99,6 +103,7 @@ colorscale:"Turbo",
 zmin:-120,
 zmax:0,
 showscale:true,
+autorange: true,
 colorbar:{title:"dB/Hz"}
 }],
 waterfallLayout
@@ -240,7 +245,38 @@ params:params
 }
 );
 };
+document
+.getElementById(
+    "runBtn"
+)
+.onclick=
+async ()=>{
 
+    const newState =
+        !running;
+
+    const r = await fetch("http://localhost:8000/rf/run",
+        {
+            method:"POST",
+            headers:{
+                "Content-Type":
+                    "application/json"
+            },
+            body:JSON.stringify({
+                running:
+                    newState
+            })
+
+        }
+    );
+    const data = await r.json();
+    running = data.running;
+    document
+    .getElementById(
+        "runBtn"
+    )
+    .textContent= running ? "STOP":"START";
+};
 document.getElementById("applyY").onclick=applySettings;
 document.getElementById(
     "toggleWaterfall"
@@ -288,7 +324,12 @@ const ws=new WebSocket("ws://localhost:8000/rf/stream");
 
 ws.onmessage=(event)=>{
 
-const data=JSON.parse(event.data);
+if(!running) return;
+
+const data=
+    JSON.parse(
+        event.data
+    );
 
 currentFs=data.sample_rate;
 
@@ -305,20 +346,24 @@ line:{color:"#00ff99",width:2}
 spectrumLayout
 );
 
-waterfallData.push(data.power_db);
-
-if(waterfallData.length>MAX_ROWS){
-waterfallData.shift();
+if (waterfallEnabled) {
+    waterfallData.push(data.power_db);
+    waterfallTimes.push(data.time_sec)
+}
+if(waterfallData.length>MAX_ROWS) {
+    waterfallData.shift();
+    waterfallTimes.shift();
 }
 
-if(
-    waterfallEnabled
-){
+
+if( waterfallEnabled){
+
     Plotly.react(
     "waterfall",
     [{
         z:waterfallData,
         x:freqMHz,
+        y:waterfallTimes,
         type:"heatmap",
         colorscale:"Turbo",
         zmin:getRef()-getRange(),

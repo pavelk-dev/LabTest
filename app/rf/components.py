@@ -245,7 +245,7 @@ class ChirpWaveform(Waveform):
         freq: float = 96e6,
         bw : float = 2e6,
         amplitude: float = 1.0,
-        period: Optional[float] = None,
+        period: Optional[float] = 2,
         noise_sigma: float = 0.0,
         name: str = "Chirp",
     ):

@@ -8,6 +8,8 @@ import asyncio
 import inspect
 
 router = APIRouter()
+fps = 20
+frame_delta = 1 / fps
 
 class RFSettings(BaseModel):
     center_freq: float
@@ -19,6 +21,20 @@ class ComponentRequest(BaseModel):
     type: str
     params: dict
 
+async def dsp_loop():
+    try:
+        while True:
+            if rf_session.running:
+                rf_session.latest_recording = (rf_session.synth.next_chunk())
+                await asyncio.sleep(len(rf_session.latest_recording.iq.samples) / rf_session.synth.sample_rate)
+            else:
+                await asyncio.sleep(0.05)
+
+    except asyncio.CancelledError:
+
+        print("DSP CANCELLED")
+
+        raise
 @router.get("/rf/components")
 async def list_components():
 
@@ -52,6 +68,17 @@ async def add_component(req: ComponentRequest):
     rf_session.synth.add(wf)
 
     return {"ok": True}
+from pydantic import BaseModel
+
+class RunRequest(BaseModel): running: bool
+
+
+@router.post( "/rf/run")
+async def set_run(req: RunRequest):
+    print(rf_session.running)
+    rf_session.running = (req.running)
+    print(rf_session.running)
+    return {"running": rf_session.running}
 @router.post("/rf/settings")
 async def update_settings(settings: RFSettings):
 
@@ -64,24 +91,24 @@ async def update_settings(settings: RFSettings):
 
 @router.websocket("/rf/stream")
 async def rf_stream(websocket: WebSocket):
-
     await websocket.accept()
 
     try:
 
         while True:
 
-            recording = (rf_session.synth.next_chunk())
+            recording = rf_session.latest_recording
+            if recording is not None:
+                freqs, power_db = (rf_session.analyzer.fft(recording.iq, rf_session.window))
+                freqs += rf_session.synth.center_freq
+                await websocket.send_json({
+                    "freq_hz": freqs.tolist(),
+                    "power_db": power_db.tolist(),
+                    "sample_rate": recording.iq.sample_rate,
+                    "time_sec": rf_session.synth.time_sec
+                })
 
-            freqs, power_db = (rf_session.analyzer.fft(recording.iq, rf_session.window))
-            freqs += rf_session.synth.center_freq
-            await websocket.send_json({
-                "freq_hz": freqs.tolist(),
-                "power_db": power_db.tolist(),
-                "sample_rate": recording.iq.sample_rate
-            })
-
-            await asyncio.sleep(len(freqs) / recording.iq.sample_rate)
+            await asyncio.sleep(frame_delta)
 
     except WebSocketDisconnect:
         print("client disconnected")

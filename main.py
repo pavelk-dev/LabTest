@@ -1,8 +1,32 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.rf import router as rf_router
+from contextlib import asynccontextmanager
+from app.api.rf import router as rf_router, dsp_loop
+import asyncio
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+
+    print("startup")
+
+    task = asyncio.create_task(dsp_loop())
+
+    yield
+
+    print("shutdown")
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+app = FastAPI(lifespan=lifespan)
+async def startup():
+    print("startup")
+    asyncio.create_task(dsp_loop())
+
 
 app.add_middleware(
     CORSMiddleware,
