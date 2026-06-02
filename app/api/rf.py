@@ -59,6 +59,26 @@ async def list_components():
         out[name] = fields
 
     return out
+# @router.get("/rf/components")
+# async def list_components():
+#
+#     out=[]
+#
+#     for i,c in enumerate(rf_session.synth._components):
+#
+#         out.append(
+#             {
+#                 "id":
+#                     i,
+#                 "enabled":
+#                     c["enabled"],
+#                 "waveform":
+#                     c["waveform"]
+#                     .to_dict()
+#             }
+#         )
+#
+#     return out
 @router.post("/rf/components")
 async def add_component(req: ComponentRequest):
 

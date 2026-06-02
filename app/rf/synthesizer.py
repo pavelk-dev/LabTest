@@ -77,8 +77,9 @@ class Synthesizer:
         self.center_freq = center_freq
         self.sample_rate = sample_rate
         self.time_sec = time_sec
+        self.id_count = 0
         self.N = N
-        self._components = []
+        self._components = [{"id": self.id_count, "waveform": AWGNWaveform(freq = self.center_freq), "enabled": True}]
         self._lock = threading.Lock()
 
     # ── Component management ───────────────────────────────────────────────
@@ -86,7 +87,7 @@ class Synthesizer:
     def add(self, waveform: Waveform, enabled: bool = True) -> "Synthesizer":
         """Add a waveform component. Returns self for chaining."""
         with self._lock:
-            self._components.append({"waveform": waveform,"enabled": enabled})
+            self._components.append({"id" : self.id_count + 1, "waveform": waveform,"enabled": enabled})
         return self
 
     def remove(self, index: int):
@@ -115,35 +116,7 @@ class Synthesizer:
             lines.append(f"  [{i}] {state} {c['waveform'].name}  ({c['waveform'].to_dict()['type']})")
         return "\n".join(lines)
 
-    # ── Synthesis ──────────────────────────────────────────────────────────
-
-    def synthesize(self) -> IQRecording:
-        """
-        Sum all enabled waveforms and compute the FFT spectrum.
-
-        Returns
-        -------
-        SpectrumResult
-            Contains the frequency axis, power spectrum (dBFS),
-            composite IQ samples, and measurement helpers.
-        """
-        fs = self.sample_rate
-        time_sec = self.time_sec
-        N = self.N
-
-        # Sum IQ from all enabled components
-        composite = np.zeros(N, dtype=np.complex128)
-        active_names = []
-        for c in self._components:
-            if not c["enabled"]:
-                continue
-            iq = c["waveform"].generate_chunk(N, fs, t0=time_sec)
-            composite += iq.samples
-            active_names.append(c["waveform"].name)
-
-
-
-        return IQRecording(iq=IQData(composite, fs), N=N, component_names=active_names,)
+    # ── Synthesis ──────────
 
 
     def next_chunk(
@@ -162,10 +135,7 @@ class Synthesizer:
         t0 = self.time_sec
 
         composite = np.zeros(N,dtype=np.complex128)
-        awgn = AWGNWaveform(freq = self.center_freq)
-        composite += awgn.generate_chunk(N, fs, 0).samples
-
-        active_names = []
+        active_ids = []
 
         components = list(self._components)
         for c in components:
@@ -179,7 +149,7 @@ class Synthesizer:
             bb_freq = wf.freq - self.center_freq
             if  wf_min > visible_max or wf_max < visible_min:
                 continue
-            elif wf_min >= visible_min and wf_max <= visible_max:
+            elif wf_min >= visible_min and wf_max <= visible_max or c["id"] == 0:
 
                 iq = (wf.generate_chunk(N,fs,t0,bb_freq=bb_freq)).samples
             else:
@@ -200,7 +170,7 @@ class Synthesizer:
                 iq = filtered[::k][:N]
 
             composite += iq
-            active_names.append(c["waveform"].name)
+            active_ids.append(c["id"])
 
 
         self.time_sec += (N / fs)
@@ -210,7 +180,7 @@ class Synthesizer:
                 composite,
                 fs
             ),
-            component_names=active_names
+            component_names=active_ids
         )
     # ── Serialisation ──────────────────────────────────────────────────────
 
