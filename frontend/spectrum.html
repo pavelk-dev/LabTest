@@ -13,6 +13,22 @@ body{margin:0;background:#0b0f14;color:#ddd;font-family:Arial,sans-serif;}
 #plots{width:100vw;height:calc(100vh - 70px);display:flex;flex-direction:column;}
 #plot{height:45%;}
 #waterfall{height:55%;display:none}
+#componentList{
+    background:#111827;
+    border-bottom:1px solid #2a3441;
+    padding:8px;
+}
+
+.componentRow{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    padding:4px 0;
+}
+
+.componentRow button{
+    padding:4px 8px;
+}
 </style>
 </head>
 
@@ -44,7 +60,7 @@ STOP
 <button id="applyY">Apply</button>
 <button id="toggleWaterfall">Waterfall ON</button>
 </div>
-
+<div id="componentList"></div>
 <div id="plots">
 <div id="plot"></div>
 <div id="waterfall"></div>
@@ -53,14 +69,15 @@ STOP
 <script>
 
 window.onload = async () => {
-
+let lastWaterfallDraw = 0;
+const WATERFALL_DRAW_MS = 200;
 let running=true;
 let currentFs=null;
 let componentDefs={};
 
 let waterfallData=[];
 let waterfallTimes=[];
-const MAX_ROWS=100;
+const MAX_ROWS=50;
 let waterfallEnabled=false;
 
 const spectrumLayout={
@@ -98,12 +115,12 @@ Plotly.newPlot("waterfall",
 [{
 z:[[0]],
 x:[],
+y:[],
 type:"heatmap",
 colorscale:"Turbo",
-zmin:-120,
-zmax:0,
+zmin:getRef()-getRange(),
+zmax:getRef(),
 showscale:true,
-autorange: true,
 colorbar:{title:"dB/Hz"}
 }],
 waterfallLayout
@@ -140,6 +157,63 @@ Plotly.relayout(
 );
 }
 
+window.toggleComponent =
+async function(id, enabled)
+{
+
+    await fetch(
+        `http://localhost:8000/rf/components/${id}`,
+        {
+            method:"PATCH",
+            headers:{"Content-Type": "application/json"}, body:JSON.stringify({enabled:enabled})
+        }
+    );
+await loadActiveComponents();
+};
+window.deleteComponent =
+async function(id)
+{
+
+    await fetch(`http://localhost:8000/rf/components/${id}`,{method:"DELETE"}
+    );
+
+    await loadActiveComponents();
+};
+async function loadActiveComponents(){
+
+    const res = await fetch("http://localhost:8000/rf/components");
+
+    const components = await res.json();
+
+    const div = document.getElementById("componentList");
+
+    div.innerHTML = "";
+
+    components.forEach(c => {
+
+        const row = document.createElement("div");
+
+        row.className = "componentRow";
+
+        const wf = c.waveform;
+
+        row.innerHTML =
+            `
+            <span>${wf.name}</span>
+            <span>${(wf.freq/1e6).toFixed(3)} MHz</span>
+
+            <button onclick="toggleComponent(${c.id},${!c.enabled})">
+                ${c.enabled ? "Disable" : "Enable"}
+            </button>
+
+            <button onclick="deleteComponent(${c.id})">
+                Delete
+            </button>
+            `;
+
+        div.appendChild(row);
+    });
+}
 async function applySettings(){
 
 updateYAxis();
@@ -167,7 +241,7 @@ vbw:0.2
 
 async function loadComponents(){
 
-const res=await fetch("http://localhost:8000/rf/components");
+const res=await fetch("http://localhost:8000/rf/component_types");
 componentDefs=await res.json();
 
 const sel=document.getElementById("waveType");
@@ -191,7 +265,7 @@ const div=document.getElementById("waveFields");
 div.innerHTML="";
 
 componentDefs[type].forEach(field=>{
-
+setInterval(loadActiveComponents,1000);
 const wrapper=document.createElement("div");
 wrapper.style.display="flex";
 wrapper.style.alignItems="center";
@@ -244,7 +318,9 @@ params:params
 })
 }
 );
+await loadActiveComponents();
 };
+
 document
 .getElementById(
     "runBtn"
@@ -319,9 +395,8 @@ document.getElementById(
     if(waterfallEnabled){Plotly.Plots.resize("waterfall");}
 };
 await loadComponents();
-
 const ws=new WebSocket("ws://localhost:8000/rf/stream");
-
+await loadActiveComponents();
 ws.onmessage=(event)=>{
 
 if(!running) return;
@@ -355,24 +430,40 @@ if(waterfallData.length>MAX_ROWS) {
     waterfallTimes.shift();
 }
 
+console.log(waterfallData.length);
+console.log(waterfallData[0]?.length);
+if (waterfallEnabled){
 
-if( waterfallEnabled){
+    const now =
+        performance.now();
 
-    Plotly.react(
-    "waterfall",
-    [{
-        z:waterfallData,
-        x:freqMHz,
-        y:waterfallTimes,
-        type:"heatmap",
-        colorscale:"Turbo",
-        zmin:getRef()-getRange(),
-        zmax:getRef(),
-        showscale:true,
-        colorbar:{title:"dB/Hz"}
-    }],
-    waterfallLayout
-    );
+    if(
+        now - lastWaterfallDraw
+        >
+        WATERFALL_DRAW_MS
+    ){
+
+        lastWaterfallDraw =
+            now;
+
+        Plotly.react(
+            "waterfall",
+            [{
+                z:waterfallData,
+                x:freqMHz,
+                y:waterfallTimes,
+                type:"heatmap",
+                colorscale:"Turbo",
+                zmin:getRef()-getRange(),
+                zmax:getRef(),
+                showscale:true,
+                colorbar:{
+                    title:"dB/Hz"
+                }
+            }],
+            waterfallLayout
+        );
+    }
 }
 };
 };

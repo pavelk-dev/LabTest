@@ -20,7 +20,8 @@ class RFSettings(BaseModel):
 class ComponentRequest(BaseModel):
     type: str
     params: dict
-
+class ComponentPatch(BaseModel):
+    enabled: bool | None = None
 async def dsp_loop():
     try:
         while True:
@@ -35,7 +36,25 @@ async def dsp_loop():
         print("DSP CANCELLED")
 
         raise
-@router.get("/rf/components")
+
+
+
+@router.patch(
+    "/rf/components/{id}"
+)
+async def patch_component(id:int, req:ComponentPatch):
+    c= rf_session.synth._components[id]
+    if(req.enabled is not None):
+        c["enabled"]=req.enabled
+    return {"ok":True}
+
+@router.delete("/rf/components/{id}")
+async def delete_component(id:int):
+
+    del(rf_session.synth._components[id])
+
+    return {"ok":True}
+@router.get("/rf/component_types")
 async def list_components():
 
     out = {}
@@ -53,32 +72,27 @@ async def list_components():
 
             fields.append({ "name": pname, "default": None
                     if p.default is inspect._empty
-                    else p.default
-            })
+                    else p.default})
 
         out[name] = fields
 
     return out
-# @router.get("/rf/components")
-# async def list_components():
-#
-#     out=[]
-#
-#     for i,c in enumerate(rf_session.synth._components):
-#
-#         out.append(
-#             {
-#                 "id":
-#                     i,
-#                 "enabled":
-#                     c["enabled"],
-#                 "waveform":
-#                     c["waveform"]
-#                     .to_dict()
-#             }
-#         )
-#
-#     return out
+@router.get("/rf/components")
+async def list_components():
+
+    out=[]
+
+    for i,c in enumerate(rf_session.synth._components):
+
+        out.append(
+            {
+                "id": i,
+                "enabled": c["enabled"],
+                "waveform": c["waveform"].to_dict()
+            }
+        )
+
+    return out
 @router.post("/rf/components")
 async def add_component(req: ComponentRequest):
 
@@ -93,7 +107,7 @@ from pydantic import BaseModel
 class RunRequest(BaseModel): running: bool
 
 
-@router.post( "/rf/run")
+@router.post("/rf/run")
 async def set_run(req: RunRequest):
     print(rf_session.running)
     rf_session.running = (req.running)
