@@ -28,36 +28,44 @@ def _awgn(N: int, sigma: float) -> np.ndarray:
 
 
 class CWTone(Waveform):
-    """
-    Pure complex sinusoid (CW carrier).
 
-        s(t) = amplitude * exp(j * 2π * freq_offset * t)
-
-    Parameters
-    ----------
-    freq : float
-        Carrier frequency offset from DC, in Hz.
-    amplitude : float
-        Linear amplitude (voltage units).
-    phase : float
-        Initial phase in radians.
-    noise_sigma : float
-        Std-dev of additive complex Gaussian noise.
-    """
+    PARAMS = [
+        {
+            "name": "freq",
+            "label": "Frequency",
+            "unit": "Hz",
+            "default": 100e6,
+        },
+        {
+            "name": "power_dbm",
+            "label": "Power",
+            "unit": "dBm",
+            "default": -30.0,
+        },
+        {
+            "name": "phase",
+            "label": "Phase",
+            "unit": "rad",
+            "default": 0.0,
+        }
+    ]
 
     def __init__(
         self,
         freq: float = 0.0,
-        amplitude: float = 1.0,
+        power_dbm: float = -30.0,
         phase: float = 0.0,
-        noise_sigma: float = 0.0,
         name: str = "CW",
     ):
         self.freq = freq
-        self.amplitude = amplitude
+        self.power_dbm = power_dbm
         self.phase = phase
+        self.name = name
+
+        power_mw = 10 ** (power_dbm / 10)
+        self.amplitude = np.sqrt(power_mw)
+
         self.bw = 0
-        self.noise_sigma = noise_sigma
         self.name = name
 
     def generate_chunk(self,N: int,fs: float,t0: float = 0.0, bb_freq : float = 0.0) -> IQData:
@@ -65,19 +73,17 @@ class CWTone(Waveform):
 
         s = (self.amplitude * np.exp(1j * (2 * np.pi * bb_freq * t+ self.phase)))
 
-        s += _awgn(N,self.noise_sigma)
-
         return IQData(s, fs)
 
     def to_dict(self) -> dict:
         return dict(type="CWTone", name=self.name,
-                    freq=self.freq, amplitude=self.amplitude,
-                    phase=self.phase, noise_sigma=self.noise_sigma)
+                    freq=self.freq, amplitude=self.power_dbm,
+                    phase=self.phase)
 
     @classmethod
     def _from_dict(cls, d: dict) -> "CWTone":
-        return cls(d["freq"], d.get("amplitude", 1.0),
-                   d.get("phase", 0.0), d.get("noise_sigma", 0.0), d.get("name", "CW"))
+        return cls(d["freq"], d.get("power_dbm", 1.0),
+                   d.get("phase", 0.0), d.get("name", "CW"))
 
 
 class AMWaveform(Waveform):
@@ -96,56 +102,71 @@ class AMWaveform(Waveform):
         Modulation (tone) frequency in Hz.
     depth : float
         Modulation depth 0–1 (1 = 100% AM).
-    amplitude : float
-        Peak carrier amplitude.
-    noise_sigma : float
-        AWGN noise std-dev.
-    """
-
+        """
+    PARAMS = [
+        {
+            "name": "freq",
+            "label": "Frequency",
+            "unit": "Hz",
+            "default": 100e6,
+        },
+        {
+            "name": "power_dbm",
+            "label": "Power",
+            "unit": "dBm",
+            "default": -30.0,
+        },
+        {
+            "name": "mod_rate",
+            "label": "Mod Rate",
+            "unit": "Hz",
+            "default": 0.0,
+        },
+        {
+            "name": "depth",
+            "label": "Mod Depth",
+            "unit": "%",
+            "default": 50,
+        }
+    ]
     def __init__(
         self,
         freq: float = 0.0,
         mod_rate: float = 1e6,
-        depth: float = 0.5,
-        amplitude: float = 1.0,
-        noise_sigma: float = 0.0,
+        depth: float = 50,
+        power_dbm: float = -30,
         name: str = "AM",
     ):
         self.freq = freq
         self.mod_rate = mod_rate
-        self.depth = depth
+        self.depth = depth / 100
         self.bw = 2 * mod_rate
-        self.amplitude = amplitude
-        self.noise_sigma = noise_sigma
+        self.power_dbm = power_dbm
+        power_mw = 10 ** (self.power_dbm / 10)
+        self.amplitude = np.sqrt(power_mw)
         self.name = name
 
     def generate_chunk(self,N: int,fs: float = 0,t0: float = 0.0, bb_freq : float = 0.0) -> IQData:
 
         t = t0 + np.arange(N) / fs
 
-        envelope = 1.0 + self.depth * np.cos(
-            2 * np.pi * self.mod_rate * t
-        )
+        envelope = 1.0 + self.depth * np.cos(2 * np.pi * self.mod_rate * t)
 
-        carrier = np.exp(
-            1j * 2 * np.pi * bb_freq* t
-        )
+        carrier = np.exp(1j * 2 * np.pi * bb_freq* t)
 
         s = self.amplitude * envelope * carrier
-        s += _awgn(N, self.noise_sigma)
 
         return IQData(s, fs)
 
     def to_dict(self) -> dict:
         return dict(type="AMWaveform", name=self.name,
                     freq=self.freq, mod_rate=self.mod_rate,
-                    depth=self.depth, amplitude=self.amplitude,
-                    noise_sigma=self.noise_sigma)
+                    depth=self.depth, power_dbm=self.power_dbm,)
 
     @classmethod
     def _from_dict(cls, d: dict) -> "AMWaveform":
-        return cls(d["freq"], d["mod_rate"], d.get("depth", 0.5),
-                   d.get("amplitude", 1.0), d.get("noise_sigma", 0.0), d.get("name", "AM"))
+        return cls(d["freq"], d["mod_rate"], d.get("depth", 50),
+                   d.get("power_dbm", -30), d.get("name", "AM"))
 
 
 class FMWaveform(Waveform):
@@ -168,16 +189,40 @@ class FMWaveform(Waveform):
         Peak frequency deviation in Hz.
     amplitude : float
         Signal amplitude.
-    noise_sigma : float
-        AWGN noise std-dev.
     """
+    PARAMS = [
+        {
+            "name": "freq",
+            "label": "Frequency",
+            "unit": "Hz",
+            "default": 100e6,
+        },
+        {
+            "name": "power_dbm",
+            "label": "Power",
+            "unit": "dBm",
+            "default": -30.0,
+        },
+        {
+            "name": "mod_rate",
+            "label": "Mod rate",
+            "unit": "Hz",
+            "default": 1e3,
+        },
+        {
+            "name": "deviation",
+            "label": "Deviation",
+            "unit": "Hz",
+            "default": 0.0,
+        }
 
+    ]
     def __init__(
         self,
-        freq: float = 0.0,
+        freq: float = 100e6,
         mod_rate: float = 0.5e6,
         freq_deviation: float = 1e6,
-        amplitude: float = 1.0,
+        power_dbm: float = -30,
         noise_sigma: float = 0.0,
         name: str = "FM",
     ):
@@ -185,7 +230,9 @@ class FMWaveform(Waveform):
         self.mod_rate = mod_rate
         self.freq_deviation = freq_deviation
         self.bw = 2 * (freq_deviation + mod_rate)
-        self.amplitude = amplitude
+        self.power_dbm = power_dbm
+        power_mw = 10 ** (self.power_dbm / 10)
+        self.amplitude = np.sqrt(power_mw)
         self.noise_sigma = noise_sigma
         self.name = name
 
@@ -201,20 +248,18 @@ class FMWaveform(Waveform):
         )
 
         s = self.amplitude * np.exp(1j * phi)
-        s += _awgn(N, self.noise_sigma)
 
         return IQData(s, fs)
 
     def to_dict(self) -> dict:
         return dict(type="FMWaveform", name=self.name,
                     freq=self.freq, mod_rate=self.mod_rate,
-                    freq_deviation=self.freq_deviation, amplitude=self.amplitude,
-                    noise_sigma=self.noise_sigma)
+                    freq_deviation=self.freq_deviation, power_dbm=self.power_dbm,)
 
     @classmethod
     def _from_dict(cls, d: dict) -> "FMWaveform":
         return cls(d["freq"], d["mod_rate"], d["freq_deviation"],
-                   d.get("amplitude", 1.0), d.get("noise_sigma", 0.0), d.get("name", "FM"))
+                   d["power_dbm"], d.get("name", "FM"))
 
 
 class ChirpWaveform(Waveform):
@@ -225,37 +270,52 @@ class ChirpWaveform(Waveform):
         s(t) = amplitude * exp(j * 2π * integral(f(t)) dt)
 
     The chirp repeats every `period` seconds (defaults to full buffer length).
-
-    Parameters
-    ----------
-    freq_start : float
-        Start frequency in Hz.
-    freq_end : float
-        End frequency in Hz.
-    amplitude : float
-        Signal amplitude.
-    period : float | None
-        Chirp repetition period in seconds. None = single sweep across buffer.
-    noise_sigma : float
-        AWGN noise std-dev.
     """
+    PARAMS = [
+        {
+            "name": "freq",
+            "label": "Frequency",
+            "unit": "Hz",
+            "default": 100e6,
+        },
+        {
+            "name": "bw",
+            "label": "bandwidth",
+            "unit": "Hz",
+            "default": 1e6,
+        },
+        {
+            "name": "power_dbm",
+            "label": "Power",
+            "unit": "dBm",
+            "default": -30.0,
+        },
 
+        {
+            "name": "period",
+            "label": "Period",
+            "unit": "Sec",
+            "default": 0.0,
+        }
+
+    ]
     def __init__(
         self,
         freq: float = 96e6,
         bw : float = 2e6,
-        amplitude: float = 1.0,
+        power_dbm: float = -30,
         period: Optional[float] = 2,
-        noise_sigma: float = 0.0,
         name: str = "Chirp",
     ):
         self.freq = freq
         self.bw = bw
         self.freq_start = self.freq - bw/2
         self.freq_end = self.freq + bw/2
-        self.amplitude = amplitude
+        self.power_dbm = power_dbm
+        power_mw = 10 ** (self.power_dbm / 10)
+        self.amplitude = np.sqrt(power_mw)
+
         self.period = period
-        self.noise_sigma = noise_sigma
         self.name = name
 
     def generate_chunk(self,N: int,fs: float,t0: float = 0.0, bb_freq : float = 0.0) -> IQData:
@@ -265,74 +325,62 @@ class ChirpWaveform(Waveform):
         f0 = (self.freq_start - self.freq)
         k = (self.freq_end - self.freq_start) / T
         phi = 2 * np.pi * ((bb_freq + f0) * t_mod + 0.5 * k * t_mod ** 2)
-        s = self.amplitude * np.exp(1j * phi) + _awgn(N, self.noise_sigma)
+        s = self.amplitude * np.exp(1j * phi)
         return IQData(s, fs)
 
     def to_dict(self) -> dict:
         return dict(type="ChirpWaveform", name=self.name,
                     freq=self.freq, bw=self.bw,
-                    amplitude=self.amplitude, period=self.period,
-                    noise_sigma=self.noise_sigma)
+                    power_dbm=self.power_dbm, period=self.period)
 
     @classmethod
-    def _from_dict(cls, d: dict) -> "ChirpWaveform":
-        return cls(d["freq"], d["bw"], d.get("amplitude", 1.0),
-                   d.get("period"), d.get("noise_sigma", 0.0), d.get("name", "Chirp"))
+    def _from_dict(cls, d):
+        return cls(
+            freq=d["freq"],
+            bw=d["bw"],
+            power_dbm=d["power_dbm"],
+            period=d.get("period"),
+            name=d.get("name", "Chirp"),
+        )
 
 
 class AWGNWaveform(Waveform):
-    """
-    Additive white Gaussian noise source (flat noise floor).
 
-    Useful to simulate a receiver noise floor independently of
-    per-component noise_sigma values.
-
-    Parameters
-    ----------
-    noise_density : float
-        Noise power density (sigma of the complex Gaussian).
-    freq : float
-        Centre frequency (DC by default). Not used in generation —
-        AWGN is wideband — but kept for metadata / JSON consistency.
-    """
+    PARAMS = [
+        {
+            "name": "noise_density_dbm_hz",
+            "label": "Noise Density",
+            "unit": "dBm/Hz",
+            "default": -174.0,
+        }
+    ]
 
     def __init__(
         self,
-        noise_density: float = 0.2,
-        freq: float = 0.0,
+        noise_density_dbm_hz: float = -174.0,
         name: str = "AWGN",
     ):
-        self.noise_density = noise_density
-        self.freq = freq
-        self.bw = np.inf
+        self.freq = 0
+        self.noise_density_dbm_hz = noise_density_dbm_hz
         self.name = name
+        self.bw = np.inf
 
     def generate_chunk(self,N: int,fs: float,t0: float = 0.0, bb_freq : float = 0.0) -> IQData:
-        s = _awgn(N, self.noise_density)
+        noise_power_dbm = (self.noise_density_dbm_hz + 10 * np.log10(fs))
+        noise_power_mw = 10 ** (noise_power_dbm / 10)
+        sigma = np.sqrt(noise_power_mw)
+        s = _awgn(N, sigma)
         return IQData(s, fs)
 
     def to_dict(self) -> dict:
         return dict(type="AWGNWaveform", name=self.name,
-                    noise_density=self.noise_density, freq=self.freq)
+                    noise_density=self.noise_density_dbm_hz)
 
     @classmethod
-    def _from_dict(
-            cls,
-            d
-    ):
+    def _from_dict(cls,d):
         return cls(
-            freq=d.get(
-                "freq",
-                0.0
-            ),
-            noise_density=d.get(
-                "noise_density",
-                0.2
-            ),
-            name=d.get(
-                "name",
-                "AWGN"
-            )
+                   noise_density=d.get("noise_density_dbm_hz"),
+                   name=d.get("name","AWGN")
         )
 
 class BPSKWaveform(Waveform):
@@ -348,27 +396,51 @@ class BPSKWaveform(Waveform):
         Carrier frequency in Hz.
     symbol_rate : float
         Symbol rate in symbols/sec (= bandwidth for rectangular pulses).
-    amplitude : float
-        Signal amplitude.
     symbols : Sequence[int] | None
         If provided, use this fixed +1/-1 sequence (tiled to fill buffer).
         If None, random symbols are generated each call.
-    noise_sigma : float
-        AWGN noise std-dev.
     """
+    PARAMS = [
+        {
+            "name": "freq",
+            "label": "Frequency",
+            "unit": "Hz",
+            "default": 100e6,
+        },
+        {
+            "name": "symbol_rate",
+            "label": "sym rate",
+            "unit": "Sym/Sec",
+            "default": 1e6,
+        },
+        {
+            "name": "power_dbm",
+            "label": "Power",
+            "unit": "dBm",
+            "default": -30.0,
+        },
 
+        {
+            "name": "symbols",
+            "label": "Symbols",
+            "default": 0.0,
+        }
+
+    ]
     def __init__(
         self,
         freq: float = 0.0,
         symbol_rate: float = 2e6,
-        amplitude: float = 1.0,
+        power_dbm: float = -30,
         symbols: Optional[Sequence[int]] = None,
         noise_sigma: float = 0.0,
         name: str = "BPSK",
     ):
         self.freq = freq
         self.symbol_rate = symbol_rate
-        self.amplitude = amplitude
+        self.power_dbm = power_dbm
+        power_mw = 10 ** (self.power_dbm / 10)
+        self.amplitude = np.sqrt(power_mw)
         self.symbols = list(symbols) if symbols is not None else None
         self.noise_sigma = noise_sigma
         self.name = name
@@ -383,20 +455,18 @@ class BPSKWaveform(Waveform):
             raw = np.random.choice([-1, 1], size=n_syms)
         baseband = np.repeat(raw, sps)[:N].astype(np.float64)
         t = t0 + np.arange(N) / fs
-        s = (self.amplitude * baseband * np.exp(1j * 2 * np.pi * bb_freq * t)
-             + _awgn(N, self.noise_sigma))
+        s = self.amplitude * baseband * np.exp(1j * 2 * np.pi * bb_freq * t)
         return IQData(s, fs)
 
     def to_dict(self) -> dict:
         return dict(type="BPSKWaveform", name=self.name,
                     freq=self.freq, symbol_rate=self.symbol_rate,
-                    amplitude=self.amplitude, symbols=self.symbols,
-                    noise_sigma=self.noise_sigma)
+                    power_dbm=self.power_dbm, symbols=self.symbols,)
 
     @classmethod
     def _from_dict(cls, d: dict) -> "BPSKWaveform":
-        return cls(d["freq"], d["symbol_rate"], d.get("amplitude", 1.0),
-                   d.get("symbols"), d.get("noise_sigma", 0.0), d.get("name", "BPSK"))
+        return cls(d["freq"], d["symbol_rate"], d.get("power_dbm"),
+                   d.get("symbols"), d.get("name", "BPSK"))
 
 
 class QPSKWaveform(Waveform):
@@ -415,26 +485,50 @@ class QPSKWaveform(Waveform):
         Signal amplitude (peak envelope = amplitude).
     symbols : Sequence[int] | None
         0–3 symbol indices; None = random.
-    noise_sigma : float
-        AWGN noise std-dev.
     """
+    PARAMS = [
+        {
+            "name": "freq",
+            "label": "Frequency",
+            "unit": "Hz",
+            "default": 100e6,
+        },
+        {
+            "name": "symbol_rate",
+            "label": "sym rate",
+            "unit": "Sym/Sec",
+            "default": 1e6,
+        },
+        {
+            "name": "power_dbm",
+            "label": "Power",
+            "unit": "dBm",
+            "default": -30.0,
+        },
 
+        {
+            "name": "symbols",
+            "label": "Symbols",
+            "default": 0.0,
+        }
+
+    ]
     _CONSTELLATION = np.array([1+1j, -1+1j, -1-1j, 1-1j]) / np.sqrt(2)
 
     def __init__(
         self,
         freq: float = 0.0,
         symbol_rate: float = 2e6,
-        amplitude: float = 1.0,
+        power_dbm = -30,
         symbols: Optional[Sequence[int]] = None,
-        noise_sigma: float = 0.0,
         name: str = "QPSK",
     ):
         self.freq = freq
         self.symbol_rate = symbol_rate
-        self.amplitude = amplitude
+        self.power_dbm = power_dbm
+        power_mw = 10 ** (self.power_dbm / 10)
+        self.amplitude = np.sqrt(power_mw)
         self.symbols = list(symbols) if symbols is not None else None
-        self.noise_sigma = noise_sigma
         self.name = name
 
     def generate_chunk(self,N: int,fs: float,t0: float = 0.0, bb_freq : float = 0.0) -> IQData:
@@ -447,20 +541,18 @@ class QPSKWaveform(Waveform):
             idx = np.random.randint(0, 4, size=n_syms)
         baseband = np.repeat(self._CONSTELLATION[idx], sps)[:N]
         t = t0 + np.arange(N) / fs
-        s = (self.amplitude * baseband * np.exp(1j * 2 * np.pi * bb_freq * t)
-             + _awgn(N, self.noise_sigma))
+        s = self.amplitude * baseband * np.exp(1j * 2 * np.pi * bb_freq * t)
         return IQData(s, fs)
 
     def to_dict(self) -> dict:
         return dict(type="QPSKWaveform", name=self.name,
                     freq=self.freq, symbol_rate=self.symbol_rate,
-                    amplitude=self.amplitude, symbols=self.symbols,
-                    noise_sigma=self.noise_sigma)
+                    power_dbm=self.power_dbm, symbols=self.symbols,)
 
     @classmethod
     def _from_dict(cls, d: dict) -> "QPSKWaveform":
-        return cls(d["freq"], d["symbol_rate"], d.get("amplitude", 1.0),
-                   d.get("symbols"), d.get("noise_sigma", 0.0), d.get("name", "QPSK"))
+        return cls(d["freq"], d["symbol_rate"], d.get("power_dbm"),
+                   d.get("symbols"), d.get("name", "QPSK"))
 
 
 class ScriptWaveform(Waveform):
@@ -470,7 +562,7 @@ class ScriptWaveform(Waveform):
     The script string is eval'd with the following locals available:
         N    : int   — number of samples requested
         fs   : float — sample rate in Hz
-        t    : ndarray shape (N,) — time vector [0, (N-1)/fs]
+        t    : ndarray shape (N) — time vector [0, (N-1)/fs]
         np   : numpy module
 
     The expression must evaluate to a complex ndarray of shape (N,).

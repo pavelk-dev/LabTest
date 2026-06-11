@@ -5,35 +5,74 @@
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 
 <style>
-body{margin:0;background:#0b0f14;color:#ddd;font-family:Arial,sans-serif;}
+html,body{margin:0;height:100%;overflow:hidden;background:#0b0f14;color:#ddd;font-family:Arial,sans-serif;}
 #toolbar{min-height:50px;display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:8px 10px;background:#111827;border-bottom:1px solid #2a3441;}
 #toolbar input,#toolbar select{width:80px;background:#0b0f14;border:1px solid #374151;color:#00ff99;padding:5px;}
 #toolbar button{background:#1f2937;color:white;border:1px solid #374151;padding:6px 12px;cursor:pointer;}
 #waveFields{display:flex;gap:6px;flex-wrap:wrap;}
-#plots{width:100vw;height:calc(100vh - 70px);display:flex;flex-direction:column;}
-#plot{height:45%;}
-#waterfall{height:55%;display:none}
+#app{display:flex;flex-direction:column;height:100vh;}
+#plots{flex:1;min-height:0;display:flex;flex-direction:column;}
+#plot{flex:1;min-height:0;}
+#waterfallContainer{flex:0 0 55%;min-height:0;display:none;position:relative;background:#111827;}
+#waterfallCanvas{position:absolute;display:block;}
+#waterfallAxisX{position:absolute;bottom:0;left:80px;right:30px;height:20px;pointer-events:none;}
+#waterfallAxisY{position:absolute;top:0;left:0;width:80px;height:100%;pointer-events:none;overflow:visible;}
+#waterfallTitle{position:absolute;top:6px;left:50%;transform:translateX(-50%);font-size:13px;color:#ddd;pointer-events:none;}
+#wfOverlay{position:absolute;cursor:crosshair;z-index:10;}
+#wfTooltip{
+  position:absolute;
+  display:none;
+  background:rgba(0,0,0,0.75);
+  color:#00ff99;
+  font-size:11px;
+  font-family:monospace;
+  padding:4px 7px;
+  border:1px solid #374151;
+  border-radius:3px;
+  pointer-events:none;
+  white-space:pre;
+  z-index:20;
+}
 #componentList{
     background:#111827;
     border-bottom:1px solid #2a3441;
-    padding:8px;
+    padding:4px 8px;
+    flex-shrink:0;
+    height:32px;          /* fixed single-row height, never grows */
+    overflow-x:auto;
+    overflow-y:hidden;
+    display:flex;
+    flex-wrap:nowrap;     /* single row, scroll sideways */
+    gap:4px;
+    align-items:center;
+    box-sizing:border-box;
 }
+#componentList:empty{display:none;height:0;padding:0;border:none;}
 
 .componentRow{
-    display:flex;
+    display:inline-flex;
     align-items:center;
-    gap:12px;
-    padding:4px 0;
+    gap:6px;
+    padding:2px 8px;
+    background:#0b0f14;
+    border:1px solid #2a3441;
+    border-radius:4px;
+    font-size:12px;
+    white-space:nowrap;
+    flex-shrink:0;
 }
-
+.componentRow .comp-name{color:#00ff99;font-weight:bold;}
+.componentRow .comp-freq{color:#888;}
 .componentRow button{
-    padding:4px 8px;
+    padding:1px 6px;
+    font-size:11px;
+    border-radius:3px;
 }
 </style>
 </head>
 
 <body>
-
+<div id="app">
 <div id="toolbar">
 <select id="waveType"></select>
 <div id="waveFields"></div>
@@ -62,24 +101,289 @@ STOP
 </div>
 <div id="componentList"></div>
 <div id="plots">
-<div id="plot"></div>
-<div id="waterfall"></div>
+  <div id="plot"></div>
+  <div id="waterfallContainer">
+    <div id="waterfallTitle">Spectrogram</div>
+    <canvas id="waterfallCanvas"></canvas>
+    <canvas id="waterfallAxisX"></canvas>
+    <svg id="waterfallAxisY"></svg>
+    <div id="wfOverlay"></div>
+    <div id="wfTooltip"></div>
+  </div>
+  <div id="constellation"></div>
+</div>
 </div>
 
 <script>
 
+// Plotly margin constants — must match spectrumLayout.margin
+const PLT_L = 80, PLT_R = 30, PLT_T = 40, PLT_B = 50;
+
+// --- Turbo colormap (accurate 16-stop LUT) ---
+const TURBO_LUT = [
+  [48,18,59],[65,30,120],[82,52,165],[94,79,199],
+  [101,108,223],[101,137,234],[93,163,232],[79,188,214],
+  [63,210,187],[55,227,157],[79,237,117],[120,243,72],
+  [165,244,41],[206,238,30],[237,220,37],[253,192,55],
+  [254,158,64],[247,121,67],[234,85,64],[213,52,56],
+  [185,26,43],[152,10,29],[114,1,15],[68,1,8]
+];
+
+function turboColor(t) {
+  t = Math.max(0, Math.min(1, t));
+  const idx = t * (TURBO_LUT.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.min(lo + 1, TURBO_LUT.length - 1);
+  const frac = idx - lo;
+  const a = TURBO_LUT[lo], b = TURBO_LUT[hi];
+  return [
+    Math.round(a[0] + frac * (b[0] - a[0])),
+    Math.round(a[1] + frac * (b[1] - a[1])),
+    Math.round(a[2] + frac * (b[2] - a[2]))
+  ];
+}
+
+// --- Canvas waterfall state ---
+let wfCanvas, wfCtx;
+let wfBuffer    = null;
+let wfFreqMHz   = null;   // last freq axis, used by hover
+let wfRows      = 0;      // how many rows have been written (capped at H)
+let wfTimeBuf   = null;   // Float64Array — one timestamp (ms) per row
+let wfNewestTime = 0;     // timestamp of the bottom row
+
+function initWaterfallCanvas() {
+  wfCanvas = document.getElementById("waterfallCanvas");
+  wfCtx = wfCanvas.getContext("2d");
+
+  const overlay = document.getElementById("wfOverlay");
+  overlay.addEventListener("mousemove", onWfHover);
+  overlay.addEventListener("mouseleave", ()=>{
+    document.getElementById("wfTooltip").style.display = "none";
+  });
+}
+
+function resizeWaterfallCanvas() {
+  if (!wfCanvas) return;
+  const container = document.getElementById("waterfallContainer");
+  const CW = container.clientWidth;
+  const CH = container.clientHeight;
+  if (CW === 0 || CH === 0) return;
+
+  const dW = Math.max(1, CW - PLT_L - PLT_R);
+  const dH = Math.max(1, CH);
+
+  wfCanvas.style.position = "absolute";
+  wfCanvas.style.left   = PLT_L + "px";
+  wfCanvas.style.top    = "0";
+  wfCanvas.style.width  = (CW - PLT_L - PLT_R) + "px";
+  wfCanvas.style.height = CH + "px";
+  wfCanvas.width  = dW;
+  wfCanvas.height = dH;
+
+  wfBuffer   = wfCtx.createImageData(dW, dH);
+  wfPowerBuf = new Float32Array(dW * dH);
+  wfTimeBuf  = new Float64Array(dH);   // one entry per pixel row
+  wfRows     = 0;
+  wfNewestTime = 0;
+
+  const overlay = document.getElementById("wfOverlay");
+  overlay.style.left   = PLT_L + "px";
+  overlay.style.top    = "0";
+  overlay.style.width  = (CW - PLT_L - PLT_R) + "px";
+  overlay.style.height = CH + "px";
+
+  if (wfFreqMHz) drawWaterfallXAxis(wfFreqMHz);
+}
+
+function drawWaterfallRow(powerDb, freqMHz, timeSec) {
+  if (!wfCanvas || !wfCtx || !wfBuffer) return;
+  const W = wfCanvas.width;
+  const H = wfCanvas.height;
+  if (W === 0 || H === 0) return;
+  wfFreqMHz = freqMHz;
+
+  const data     = wfBuffer.data;
+  const ref      = getRef();
+  const range    = getRange();
+  const nBins    = powerDb.length;
+  const rowBytes = W * 4;
+  const tSec     = (timeSec != null) ? timeSec : (Date.now() / 1000);
+
+  // Shift buffers DOWN by one row (oldest row falls off the bottom)
+  data.copyWithin(rowBytes, 0, (H - 1) * rowBytes);
+  if (wfPowerBuf) wfPowerBuf.copyWithin(W, 0, (H - 1) * W);
+  if (wfTimeBuf)  wfTimeBuf.copyWithin(1, 0, H - 1);
+
+  // Write new row at top (row 0 = newest)
+  for (let x = 0; x < W; x++) {
+    const binIndex = Math.min(Math.floor(x / W * nBins), nBins - 1);
+    const norm = (powerDb[binIndex] - (ref - range)) / range;
+    const [r, g, b] = turboColor(norm);
+    const i = x * 4;
+    data[i]     = r;
+    data[i + 1] = g;
+    data[i + 2] = b;
+    data[i + 3] = 255;
+    if (wfPowerBuf) wfPowerBuf[x] = powerDb[binIndex];
+  }
+  if (wfTimeBuf) wfTimeBuf[0] = tSec;
+  wfNewestTime = tSec;
+
+  wfCtx.putImageData(wfBuffer, 0, 0);
+  if (wfRows < H) wfRows++;
+
+  drawWaterfallXAxis(freqMHz);
+  drawWaterfallYAxis();
+}
+
+function drawWaterfallXAxis(freqMHz) {
+  const axCanvas = document.getElementById("waterfallAxisX");
+  if (!axCanvas || !freqMHz || freqMHz.length < 2) return;
+  const cw = axCanvas.offsetWidth;
+  const ch = axCanvas.offsetHeight;
+  if (!cw || !ch) return;
+  axCanvas.width  = cw;
+  axCanvas.height = ch;
+  const ctx = axCanvas.getContext("2d");
+  ctx.clearRect(0, 0, cw, ch);
+  ctx.fillStyle = "#888";
+  ctx.font = "10px Arial";
+  ctx.textAlign = "center";
+  const nLabels = Math.max(1, Math.floor(cw / 80));
+  for (let i = 0; i <= nLabels; i++) {
+    const frac = i / nLabels;
+    const idx  = Math.min(Math.floor(frac * freqMHz.length), freqMHz.length - 1);
+    ctx.fillText(freqMHz[idx].toFixed(2), frac * cw, 12);
+  }
+}
+
+function drawWaterfallYAxis() {
+  const svg = document.getElementById("waterfallAxisY");
+  if (!svg || !wfTimeBuf || wfRows < 2) return;
+  const H  = wfCanvas.height;
+  const CH = wfCanvas.offsetHeight || H;
+  const scaleY = CH / H;   // display px per canvas row
+
+  // Row 0 = newest (top), rows increase downward = older
+  // wfTimeBuf[0] = newest time (sec), wfTimeBuf[wfRows-1] = oldest visible
+  const newestSec = wfTimeBuf[0];
+  const oldestSec = wfTimeBuf[wfRows - 1];
+  const spanSec   = newestSec - oldestSec;
+  if (spanSec <= 0) return;
+
+  // Pick a nice tick interval targeting ~one label per 40px
+  const targetLabels = Math.max(2, Math.floor(CH / 40));
+  const rawInterval  = spanSec / targetLabels;
+  const niceSteps    = [0.05,0.1,0.2,0.5,1,2,5,10,15,30,60,120,300,600];
+  const interval     = niceSteps.find(s => s >= rawInterval) || niceSteps[niceSteps.length - 1];
+
+  const svgW = PLT_L;
+  const svgH = CH;
+  let html = `<rect width="${svgW}" height="${svgH}" fill="#111827"/>`;
+
+  // Emit a tick whenever we cross a multiple of `interval` seconds below newestSec
+  let lastTick = -Infinity;
+  for (let row = 0; row < wfRows; row++) {
+    const deltaSec = newestSec - wfTimeBuf[row];   // 0 at top, grows downward
+    const tick = Math.floor(deltaSec / interval);
+    if (tick !== lastTick) {
+      lastTick = tick;
+      const y = Math.round(row * scaleY);
+      if (y < 0 || y > svgH) continue;
+      const label = "+" + (tick * interval).toFixed(
+        interval < 1 ? 2 : interval < 10 ? 1 : 0
+      ) + "s";
+      html += `<line x1="${svgW-6}" y1="${y}" x2="${svgW}" y2="${y}" stroke="#555" stroke-width="1"/>`;
+      html += `<text x="${svgW-8}" y="${y+4}" text-anchor="end" fill="#888" font-size="10" font-family="Arial">${label}</text>`;
+    }
+  }
+  svg.setAttribute("width",  svgW);
+  svg.setAttribute("height", svgH);
+  svg.innerHTML = html;
+}
+
+function formatTimeSec(totalSec) {
+  const d   = new Date(totalSec * 1000);
+  const hh  = String(d.getHours()).padStart(2,"0");
+  const mm  = String(d.getMinutes()).padStart(2,"0");
+  const ss  = String(d.getSeconds()).padStart(2,"0");
+  return `${hh}:${mm}:${ss}`;
+}
+
+function onWfHover(e) {
+  if (!wfFreqMHz || !wfBuffer || wfRows === 0) return;
+  const overlay = document.getElementById("wfOverlay");
+  const tip     = document.getElementById("wfTooltip");
+  const rect    = overlay.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const W = wfCanvas.width;
+  const H = wfCanvas.height;
+
+  const binIndex = Math.min(Math.floor(x / rect.width * wfFreqMHz.length), wfFreqMHz.length - 1);
+  const freqVal  = wfFreqMHz[binIndex];
+  const pixelX   = Math.floor(x / rect.width * W);
+  const rowIndex = Math.min(Math.floor(y / rect.height * H), H - 1);
+
+  const powerVal = wfPowerBuf ? wfPowerBuf[rowIndex * W + pixelX] : null;
+  const tSec     = wfTimeBuf  ? wfTimeBuf[rowIndex]               : null;
+  const newestT  = wfTimeBuf  ? wfTimeBuf[0]                      : null;
+  const deltaStr = (tSec != null && newestT != null && tSec > 0)
+    ? "+" + (newestT - tSec).toFixed(2) + "s"
+    : null;
+
+  // Keep tooltip inside the overlay
+  const tipX = (x + 14 + 120 > rect.width)  ? x - 130 : x + 14;
+  const tipY = (y - 10 < 0)                  ? 4       : y - 10;
+
+  tip.style.display = "block";
+  tip.style.left    = tipX + "px";
+  tip.style.top     = tipY + "px";
+  tip.textContent   = [
+    freqVal.toFixed(3) + " MHz",
+    powerVal != null ? powerVal.toFixed(1) + " dB/Hz" : null,
+    deltaStr  ? "⏱ " + deltaStr : null,
+  ].filter(Boolean).join("\n");
+}
+
+// Parallel power buffer (Float32) so hover can read actual dB values
+let wfPowerBuf = null;
+
 window.onload = async () => {
-let lastWaterfallDraw = 0;
-const WATERFALL_DRAW_MS = 200;
 let running=true;
 let currentFs=null;
 let componentDefs={};
-
-let waterfallData=[];
-let waterfallTimes=[];
-const MAX_ROWS=50;
 let waterfallEnabled=false;
 
+initWaterfallCanvas();
+window.addEventListener("resize", resizeWaterfallCanvas);
+const constellationLayout={
+title:"Constellation",
+margin:{l:60,r:20,t:40,b:60},
+paper_bgcolor:"#0b0f14",
+plot_bgcolor:"#111827",
+font:{color:"#ddd",family:"Arial"},
+xaxis:{
+  title:"I",
+  gridcolor:"#2a3441",
+  zerolinecolor:"#4b5563",
+  range:[-0.6,0.6],
+  autorange:false,
+  tickformat:".1f",
+  dtick:0.5,
+  scaleanchor:"y",   // force square aspect
+  scaleratio:1,
+},
+yaxis:{
+  title:"Q",
+  gridcolor:"#2a3441",
+  zerolinecolor:"#4b5563",
+  range:[-1.5,1.5],
+  autorange:false,
+  tickformat:".2f",
+  dtick:0.2,
+}
+};
 const spectrumLayout={
 title:"Spectrum",
 margin:{l:80,r:30,t:40,b:50},
@@ -91,41 +395,27 @@ xaxis:{title:"Frequency (MHz)",gridcolor:"#2a3441",tickformat:".2f"},
 yaxis:{title:"PSD (dB/Hz)",gridcolor:"#2a3441",tickformat:".1f",range:[-120,-80],autorange:false}
 };
 
-const waterfallLayout={
-title:"Spectrogram",
-margin:{l:80,r:30,t:40,b:60},
-paper_bgcolor:"#0b0f14",
-plot_bgcolor:"#111827",
-font:{color:"#ddd",family:"Arial"},
-xaxis:{title:"Frequency (MHz)",gridcolor:"#2a3441",tickformat:".2f"},
-yaxis:{title:"Time", tickformat:".2f", gridcolor:"#2a3441"}
-};
-
 Plotly.newPlot("plot",
-[{
-x:[],
-y:[],
-mode:"lines",
-line:{color:"#00ff99",width:2}
-}],
-spectrumLayout
+        [{
+          x:[],
+          y:[],
+          mode:"lines",
+          line:{color:"#00ff99",width:2}
+        }],
+        spectrumLayout
+        );
+Plotly.newPlot("constellation",
+  [
+          {
+            x:[],
+            y:[],
+            mode:"markers",
+            marker:{size:3,color:"#3b82f6"},
+            type:"scattergl"
+          }
+  ],
+        constellationLayout
 );
-
-Plotly.newPlot("waterfall",
-[{
-z:[[0]],
-x:[],
-y:[],
-type:"heatmap",
-colorscale:"Turbo",
-zmin:getRef()-getRange(),
-zmax:getRef(),
-showscale:true,
-colorbar:{title:"dB/Hz"}
-}],
-waterfallLayout
-);
-
 function rbwToFFT(fs,rbw){
 return 2**Math.round(Math.log2(fs/rbw));
 }
@@ -138,29 +428,18 @@ function getRange(){
 return Number(document.getElementById("range").value);
 }
 
-function updateYAxis(){
+window.getRef = getRef;
+window.getRange = getRange;
 
+function updateYAxis(){
 const ref=getRef();
 const range=getRange();
-
 spectrumLayout.yaxis.range=[ref-range,ref];
-
-Plotly.relayout(
-"plot",
-{"yaxis.range":spectrumLayout.yaxis.range}
-);
-
-Plotly.relayout(
-"waterfall",
-{
-}
-);
+Plotly.relayout("plot",{"yaxis.range":spectrumLayout.yaxis.range});
 }
 
 window.toggleComponent =
-async function(id, enabled)
-{
-
+async function(id, enabled){
     await fetch(
         `http://localhost:8000/rf/components/${id}`,
         {
@@ -170,60 +449,39 @@ async function(id, enabled)
     );
 await loadActiveComponents();
 };
+
 window.deleteComponent =
-async function(id)
-{
-
-    await fetch(`http://localhost:8000/rf/components/${id}`,{method:"DELETE"}
-    );
-
+async function(id){
+    await fetch(`http://localhost:8000/rf/components/${id}`,{method:"DELETE"});
     await loadActiveComponents();
 };
+
 async function loadActiveComponents(){
-
     const res = await fetch("http://localhost:8000/rf/components");
-
     const components = await res.json();
-
     const div = document.getElementById("componentList");
-
     div.innerHTML = "";
-
     components.forEach(c => {
-
         const row = document.createElement("div");
-
         row.className = "componentRow";
-
         const wf = c.waveform;
-
         row.innerHTML =
-            `
-            <span>${wf.name}</span>
+            `<span>${wf.name}</span>
             <span>${(wf.freq/1e6).toFixed(3)} MHz</span>
-
             <button onclick="toggleComponent(${c.id},${!c.enabled})">
                 ${c.enabled ? "Disable" : "Enable"}
             </button>
-
-            <button onclick="deleteComponent(${c.id})">
-                Delete
-            </button>
-            `;
-
+            <button onclick="deleteComponent(${c.id})">Delete</button>`;
         div.appendChild(row);
     });
 }
+
 async function applySettings(){
-
 updateYAxis();
-
 const center=Number(document.getElementById("center").value);
 const span=Number(document.getElementById("span").value);
 const rbw=Number(document.getElementById("rbw").value);
-
 const fft=rbwToFFT(span,rbw);
-
 await fetch(
 "http://localhost:8000/rf/settings",
 {
@@ -240,47 +498,37 @@ vbw:0.2
 }
 
 async function loadComponents(){
-
 const res=await fetch("http://localhost:8000/rf/component_types");
 componentDefs=await res.json();
-
+console.log(componentDefs);
 const sel=document.getElementById("waveType");
 sel.innerHTML="";
-
 for(const name in componentDefs){
 const opt=document.createElement("option");
 opt.value=name;
 opt.textContent=name;
 sel.appendChild(opt);
 }
-
 renderFields();
 }
 
 function renderFields(){
-
 const type=document.getElementById("waveType").value;
 const div=document.getElementById("waveFields");
-
 div.innerHTML="";
-
 componentDefs[type].forEach(field=>{
-setInterval(loadActiveComponents,1000);
 const wrapper=document.createElement("div");
 wrapper.style.display="flex";
 wrapper.style.alignItems="center";
 wrapper.style.gap="4px";
-
 const label=document.createElement("span");
-label.textContent=field.name;
+label.textContent = field.unit ? `${field.label} [${field.unit}]` : field.label;
 label.style.color="#aaa";
 label.style.fontSize="12px";
-
 const input=document.createElement("input");
 input.id="field_"+field.name;
-input.value=field.default ?? "";
-input.placeholder=field.name;
-
+input.value = field.default ?? "";
+input.placeholder = field.label;
 wrapper.appendChild(label);
 wrapper.appendChild(input);
 div.appendChild(wrapper);
@@ -290,180 +538,77 @@ div.appendChild(wrapper);
 document.getElementById("waveType").onchange=renderFields;
 
 document.getElementById("addComponent").onclick=async()=>{
-
 const type=document.getElementById("waveType").value;
 const params={};
-
 componentDefs[type].forEach(field=>{
-
 const raw=document.getElementById("field_"+field.name).value;
-
-if(raw===""||raw==="null"){
-params[field.name]=null;
-}
-else{
-const num=Number(raw);
-params[field.name]=Number.isNaN(num)?raw:num;
-}
+if(raw===""||raw==="null"){params[field.name]=null;}
+else{const num=Number(raw);params[field.name]=Number.isNaN(num)?raw:num;}
 });
-
 await fetch(
 "http://localhost:8000/rf/components",
 {
 method:"POST",
 headers:{"Content-Type":"application/json"},
-body:JSON.stringify({
-type:type,
-params:params
-})
+body:JSON.stringify({type:type,params:params})
 }
 );
 await loadActiveComponents();
 };
 
-document
-.getElementById(
-    "runBtn"
-)
-.onclick=
-async ()=>{
-
-    const newState =
-        !running;
-
-    const r = await fetch("http://localhost:8000/rf/run",
-        {
-            method:"POST",
-            headers:{
-                "Content-Type":
-                    "application/json"
-            },
-            body:JSON.stringify({
-                running:
-                    newState
-            })
-
-        }
-    );
-    const data = await r.json();
-    running = data.running;
-    document
-    .getElementById(
-        "runBtn"
-    )
-    .textContent= running ? "STOP":"START";
+document.getElementById("runBtn").onclick=async()=>{
+const newState=!running;
+const r=await fetch("http://localhost:8000/rf/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({running:newState})});
+const data=await r.json();
+running=data.running;
+document.getElementById("runBtn").textContent=running?"STOP":"START";
 };
+
 document.getElementById("applyY").onclick=applySettings;
-document.getElementById(
-    "toggleWaterfall"
-).onclick=()=>{
 
-    waterfallEnabled=
-        !waterfallEnabled;
-
-    const wf=
-        document.getElementById(
-            "waterfall"
-        );
-
-    const plot=
-        document.getElementById(
-            "plot"
-        );
-
-    const btn=
-        document.getElementById(
-            "toggleWaterfall"
-        );
-
+document.getElementById("toggleWaterfall").onclick=()=>{
+    waterfallEnabled=!waterfallEnabled;
+    const wfContainer=document.getElementById("waterfallContainer");
+    const btn=document.getElementById("toggleWaterfall");
     if(waterfallEnabled){
-
-        wf.style.display= "block";
-        plot.style.height= "45%";
-        wf.style.height= "55%";
-        btn.textContent= "Waterfall ON";}
-
-    else{
-
-        wf.style.display= "none";
-        plot.style.height= "100%";
-        btn.textContent= "Waterfall OFF";
+        wfContainer.style.display="block";
+        btn.textContent="Waterfall ON";
+        // defer so browser has laid out the now-visible container
+        requestAnimationFrame(()=>{
+            resizeWaterfallCanvas();
+            Plotly.Plots.resize("plot");
+        });
+    }else{
+        wfContainer.style.display="none";
+        btn.textContent="Waterfall OFF";
+        Plotly.Plots.resize("plot");
     }
-
-    Plotly.Plots.resize("plot");
-
-    if(waterfallEnabled){Plotly.Plots.resize("waterfall");}
 };
+
 await loadComponents();
 const ws=new WebSocket("ws://localhost:8000/rf/stream");
 await loadActiveComponents();
+
 ws.onmessage=(event)=>{
-
 if(!running) return;
-
-const data=
-    JSON.parse(
-        event.data
-    );
-
+const data=JSON.parse(event.data);
 currentFs=data.sample_rate;
-
 const freqMHz=data.freq_hz.map(f=>f/1e6);
-
+if(data.iq_i && data.iq_q){
+Plotly.react(
+"constellation",
+[{x:data.iq_i,y:data.iq_q,mode:"markers",marker:{size:3,color:"#3b82f6"},type:"scattergl"}],
+constellationLayout
+);
+}
 Plotly.react(
 "plot",
-[{
-x:freqMHz,
-y:data.power_db,
-mode:"lines",
-line:{color:"#00ff99",width:2}
-}],
+[{x:freqMHz,y:data.power_db,mode:"lines",line:{color:"#00ff99",width:2}}],
 spectrumLayout
 );
 
-if (waterfallEnabled) {
-    waterfallData.push(data.power_db);
-    waterfallTimes.push(data.time_sec)
-}
-if(waterfallData.length>MAX_ROWS) {
-    waterfallData.shift();
-    waterfallTimes.shift();
-}
-
-console.log(waterfallData.length);
-console.log(waterfallData[0]?.length);
-if (waterfallEnabled){
-
-    const now =
-        performance.now();
-
-    if(
-        now - lastWaterfallDraw
-        >
-        WATERFALL_DRAW_MS
-    ){
-
-        lastWaterfallDraw =
-            now;
-
-        Plotly.react(
-            "waterfall",
-            [{
-                z:waterfallData,
-                x:freqMHz,
-                y:waterfallTimes,
-                type:"heatmap",
-                colorscale:"Turbo",
-                zmin:getRef()-getRange(),
-                zmax:getRef(),
-                showscale:true,
-                colorbar:{
-                    title:"dB/Hz"
-                }
-            }],
-            waterfallLayout
-        );
-    }
+if(waterfallEnabled){
+    drawWaterfallRow(data.power_db, freqMHz, data.time_sec);
 }
 };
 };

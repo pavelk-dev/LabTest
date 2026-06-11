@@ -72,14 +72,14 @@ class Synthesizer:
         time_sec=0,
         sample_rate=20e6,
         N=4096,
-        center_freq = 0,
+        center_freq = 100e6,
     ):
         self.center_freq = center_freq
         self.sample_rate = sample_rate
         self.time_sec = time_sec
         self.id_count = 0
         self.N = N
-        self._components = [{"id": self.id_count, "waveform": AWGNWaveform(freq = self.center_freq), "enabled": True}]
+        self._components = [{"id": self.id_count, "waveform": AWGNWaveform(), "enabled": True}]
         self._lock = threading.Lock()
 
     # ── Component management ───────────────────────────────────────────────
@@ -175,13 +175,7 @@ class Synthesizer:
 
         self.time_sec += (N / fs)
 
-        return IQRecording(
-            iq=IQData(
-                composite,
-                fs
-            ),
-            component_names=active_ids
-        )
+        return IQRecording(iq=IQData(composite,fs),component_names=active_ids)
     # ── Serialisation ──────────────────────────────────────────────────────
 
     def to_dict(self) -> dict:

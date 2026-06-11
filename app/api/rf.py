@@ -1,7 +1,7 @@
 from fastapi import APIRouter, WebSocket
 from pydantic import BaseModel
 from starlette.websockets import WebSocketDisconnect
-
+import numpy as np
 from app.rf.session import rf_session
 from app.rf.waveform_registry import WAVEFORM_REGISTRY
 import asyncio
@@ -57,26 +57,9 @@ async def delete_component(id:int):
 @router.get("/rf/component_types")
 async def list_components():
 
-    out = {}
-
-    for name, cls in WAVEFORM_REGISTRY.items():
-
-        sig = inspect.signature(cls.__init__)
-
-        fields = []
-
-        for pname, p in sig.parameters.items():
-
-            if pname == "self":
-                continue
-
-            fields.append({ "name": pname, "default": None
-                    if p.default is inspect._empty
-                    else p.default})
-
-        out[name] = fields
-
-    return out
+    return {
+        name: cls.PARAMS
+        for name, cls in WAVEFORM_REGISTRY.items()}
 @router.get("/rf/components")
 async def list_components():
 
@@ -132,6 +115,14 @@ async def rf_stream(websocket: WebSocket):
         while True:
 
             recording = rf_session.latest_recording
+            mag = np.abs(recording.iq.samples)
+            noise_floor = np.percentile(mag, 50)
+            signal_level = np.percentile(mag, 90)
+            threshold = noise_floor + 0.3 * (signal_level - noise_floor)
+            mask = mag > threshold
+            normalized = recording.iq.samples[mask] / np.percentile(mag[mask], 75)
+            i_vis = normalized.real
+            q_vis = normalized.imag
             if recording is not None:
                 freqs, power_db = (rf_session.analyzer.fft(recording.iq, rf_session.window))
                 freqs += rf_session.synth.center_freq
@@ -139,7 +130,9 @@ async def rf_stream(websocket: WebSocket):
                     "freq_hz": freqs.tolist(),
                     "power_db": power_db.tolist(),
                     "sample_rate": recording.iq.sample_rate,
-                    "time_sec": rf_session.synth.time_sec
+                    "time_sec": rf_session.synth.time_sec,
+                    "iq_i": i_vis.tolist(),
+                    "iq_q": q_vis.tolist(),
                 })
 
             await asyncio.sleep(frame_delta)

@@ -20,8 +20,6 @@ def window(
             f"Unknown window: {name}"
         )
 
-    w = windows[name](
-        len(samples)
-    )
-
-    return samples * w
+    w = windows[name](len(samples))
+    window_power = np.mean(w**2)
+    return samples * w, window_power
