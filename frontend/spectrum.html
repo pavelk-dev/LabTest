@@ -11,113 +11,111 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0f14;color:#ddd;fon
 #toolbar button{background:#1f2937;color:white;border:1px solid #374151;padding:6px 12px;cursor:pointer;}
 #waveFields{display:flex;gap:6px;flex-wrap:wrap;}
 #app{display:flex;flex-direction:column;height:100vh;}
+
+/* ── view toggle strip ── */
+#viewStrip{
+  display:flex;gap:4px;padding:4px 8px;
+  background:#111827;border-bottom:1px solid #2a3441;
+  flex-shrink:0;
+}
+.viewBtn{
+  padding:3px 12px;font-size:12px;border-radius:3px;cursor:pointer;
+  background:#1f2937;color:#888;border:1px solid #374151;
+  transition:color .15s,border-color .15s;
+}
+.viewBtn.active{color:#00ff99;border-color:#00ff99;}
+
+/* ── component pill strip ── */
+#componentList{
+    background:#111827;border-bottom:1px solid #2a3441;
+    padding:4px 8px;flex-shrink:0;height:32px;
+    overflow-x:auto;overflow-y:hidden;
+    display:flex;flex-wrap:nowrap;gap:4px;align-items:center;
+    box-sizing:border-box;
+}
+#componentList:empty{display:none;height:0;padding:0;border:none;}
+.componentRow{
+    display:inline-flex;align-items:center;gap:6px;padding:2px 8px;
+    background:#0b0f14;border:1px solid #2a3441;border-radius:4px;
+    font-size:12px;white-space:nowrap;flex-shrink:0;
+}
+.componentRow button{padding:1px 6px;font-size:11px;border-radius:3px;}
+
+/* ── panels ── */
 #plots{flex:1;min-height:0;display:flex;flex-direction:column;}
-#plot{flex:1;min-height:0;}
-#waterfallContainer{flex:0 0 55%;min-height:0;display:none;position:relative;background:#111827;}
+
+/* every panel takes equal share of available height */
+.panel{flex:1;min-height:0;display:none;position:relative;}
+.panel.visible{display:flex;flex-direction:column;}
+
+/* thin divider between panels */
+.panel + .panel.visible{border-top:1px solid #2a3441;}
+
+/* spectrum & constellation are just divs Plotly fills */
+#plot,#constellation{width:100%;height:100%;}
+
+/* waterfall internals */
 #waterfallCanvas{position:absolute;display:block;}
 #waterfallAxisX{position:absolute;bottom:0;left:80px;right:30px;height:20px;pointer-events:none;}
 #waterfallAxisY{position:absolute;top:0;left:0;width:80px;height:100%;pointer-events:none;overflow:visible;}
 #waterfallTitle{position:absolute;top:6px;left:50%;transform:translateX(-50%);font-size:13px;color:#ddd;pointer-events:none;}
 #wfOverlay{position:absolute;cursor:crosshair;z-index:10;}
 #wfTooltip{
-  position:absolute;
-  display:none;
-  background:rgba(0,0,0,0.75);
-  color:#00ff99;
-  font-size:11px;
-  font-family:monospace;
-  padding:4px 7px;
-  border:1px solid #374151;
-  border-radius:3px;
-  pointer-events:none;
-  white-space:pre;
-  z-index:20;
-}
-#componentList{
-    background:#111827;
-    border-bottom:1px solid #2a3441;
-    padding:4px 8px;
-    flex-shrink:0;
-    height:32px;          /* fixed single-row height, never grows */
-    overflow-x:auto;
-    overflow-y:hidden;
-    display:flex;
-    flex-wrap:nowrap;     /* single row, scroll sideways */
-    gap:4px;
-    align-items:center;
-    box-sizing:border-box;
-}
-#componentList:empty{display:none;height:0;padding:0;border:none;}
-
-.componentRow{
-    display:inline-flex;
-    align-items:center;
-    gap:6px;
-    padding:2px 8px;
-    background:#0b0f14;
-    border:1px solid #2a3441;
-    border-radius:4px;
-    font-size:12px;
-    white-space:nowrap;
-    flex-shrink:0;
-}
-.componentRow .comp-name{color:#00ff99;font-weight:bold;}
-.componentRow .comp-freq{color:#888;}
-.componentRow button{
-    padding:1px 6px;
-    font-size:11px;
-    border-radius:3px;
+  position:absolute;display:none;
+  background:rgba(0,0,0,0.75);color:#00ff99;
+  font-size:11px;font-family:monospace;padding:4px 7px;
+  border:1px solid #374151;border-radius:3px;
+  pointer-events:none;white-space:pre;z-index:20;
 }
 </style>
 </head>
 
 <body>
 <div id="app">
+
 <div id="toolbar">
-<select id="waveType"></select>
-<div id="waveFields"></div>
-
-<button id="addComponent">Add</button>
-
-<span>Center</span>
-<input id="center" value="100e6">
-
-<span>Span</span>
-<input id="span" value="20e6">
-
-<span>Ref</span>
-<input id="ref" value="0">
-
-<span>Range</span>
-<input id="range" value="100">
-
-<span>RBW</span>
-<input id="rbw" value="5e3">
-<button id="runBtn">
-STOP
-</button>
-<button id="applyY">Apply</button>
-<button id="toggleWaterfall">Waterfall ON</button>
+  <select id="waveType"></select>
+  <div id="waveFields"></div>
+  <button id="addComponent">Add</button>
+  <span>Center</span><input id="center" value="100e6">
+  <span>Span</span><input id="span" value="20e6">
+  <span>Ref</span><input id="ref" value="0">
+  <span>Range</span><input id="range" value="100">
+  <span>RBW</span><input id="rbw" value="5e3">
+  <button id="runBtn">STOP</button>
+  <button id="applyY">Apply</button>
 </div>
+
+<div id="viewStrip">
+  <button class="viewBtn active" data-panel="plot">Spectrum</button>
+  <button class="viewBtn"        data-panel="waterfallContainer">Waterfall</button>
+  <button class="viewBtn"        data-panel="constellation">Constellation</button>
+  <div style="width:1px;background:#2a3441;margin:0 4px;align-self:stretch;"></div>
+  <button class="viewBtn active" id="autoscaleBtn">Autoscale Y</button>
+</div>
+
 <div id="componentList"></div>
+
 <div id="plots">
-  <div id="plot"></div>
-  <div id="waterfallContainer">
+  <div id="plot"              class="panel visible"></div>
+  <div id="waterfallContainer" class="panel" style="background:#111827;">
     <div id="waterfallTitle">Spectrogram</div>
     <canvas id="waterfallCanvas"></canvas>
     <canvas id="waterfallAxisX"></canvas>
-    <svg id="waterfallAxisY"></svg>
-    <div id="wfOverlay"></div>
-    <div id="wfTooltip"></div>
+    <svg    id="waterfallAxisY"></svg>
+    <div    id="wfOverlay"></div>
+    <div    id="wfTooltip"></div>
   </div>
-  <div id="constellation"></div>
+  <div id="constellation" class="panel"></div>
 </div>
+
 </div>
 
 <script>
 
 // Plotly margin constants — must match spectrumLayout.margin
 const PLT_L = 80, PLT_R = 30, PLT_T = 40, PLT_B = 50;
+
 
 // --- Turbo colormap (accurate 16-stop LUT) ---
 const TURBO_LUT = [
@@ -357,33 +355,7 @@ let waterfallEnabled=false;
 
 initWaterfallCanvas();
 window.addEventListener("resize", resizeWaterfallCanvas);
-const constellationLayout={
-title:"Constellation",
-margin:{l:60,r:20,t:40,b:60},
-paper_bgcolor:"#0b0f14",
-plot_bgcolor:"#111827",
-font:{color:"#ddd",family:"Arial"},
-xaxis:{
-  title:"I",
-  gridcolor:"#2a3441",
-  zerolinecolor:"#4b5563",
-  range:[-0.6,0.6],
-  autorange:false,
-  tickformat:".1f",
-  dtick:0.5,
-  scaleanchor:"y",   // force square aspect
-  scaleratio:1,
-},
-yaxis:{
-  title:"Q",
-  gridcolor:"#2a3441",
-  zerolinecolor:"#4b5563",
-  range:[-1.5,1.5],
-  autorange:false,
-  tickformat:".2f",
-  dtick:0.2,
-}
-};
+
 const spectrumLayout={
 title:"Spectrum",
 margin:{l:80,r:30,t:40,b:50},
@@ -395,27 +367,75 @@ xaxis:{title:"Frequency (MHz)",gridcolor:"#2a3441",tickformat:".2f"},
 yaxis:{title:"PSD (dB/Hz)",gridcolor:"#2a3441",tickformat:".1f",range:[-120,-80],autorange:false}
 };
 
+// Y-axis autoscale — lives here so it can close over spectrumLayout
+let yAutoscale  = true;
+let yPeakSmooth = null;
+let yValleySmooth = null;
+const Y_HEADROOM = 10;
+const Y_FLOOR    = 60;
+const Y_ALPHA    = 0.05;
+
+function autoscaleY(powerDb) {
+  if (!yAutoscale || !powerDb || powerDb.length === 0) return;
+  const peak = Math.max(...powerDb);
+  const valley = Math.min(...powerDb);
+  yPeakSmooth = (yPeakSmooth === null)
+    ? peak
+    : yPeakSmooth + Y_ALPHA * (peak - yPeakSmooth);
+  yValleySmooth = (yValleySmooth === null)
+    ? valley
+    : yValleySmooth + Y_ALPHA * (valley - yValleySmooth)
+  const top    = Math.ceil((yPeakSmooth + Y_HEADROOM) / 10) * 10;
+  const bottom = Math.floor((yValleySmooth - 5) / 10) * 10;
+  if (top !== spectrumLayout.yaxis.range[1] || bottom !== spectrumLayout.yaxis.range[0]) {
+    spectrumLayout.yaxis.range = [bottom, top];
+    document.getElementById("ref").value   = top;
+    document.getElementById("range").value = Y_FLOOR;
+  }
+}
+
+document.getElementById("autoscaleBtn").addEventListener("click", () => {
+  yAutoscale  = !yAutoscale;
+  yPeakSmooth = null;
+  document.getElementById("autoscaleBtn").classList.toggle("active", yAutoscale);
+});
+
+const constellationLayout={
+title:"Constellation",
+margin:{l:60,r:20,t:40,b:60},
+paper_bgcolor:"#0b0f14",
+plot_bgcolor:"#111827",
+font:{color:"#ddd",family:"Arial"},
+xaxis:{
+  title:"I",
+  gridcolor:"#2a3441",
+  zerolinecolor:"#4b5563",
+  range:[-1.5,1.5],
+  autorange:false,
+  tickformat:".1f",
+  dtick:0.5,
+},
+yaxis:{
+  title:"Q",
+  gridcolor:"#2a3441",
+  zerolinecolor:"#4b5563",
+  range:[-1.5,1.5],
+  autorange:false,
+  tickformat:".1f",
+  dtick:0.5,
+}
+};
+
 Plotly.newPlot("plot",
-        [{
-          x:[],
-          y:[],
-          mode:"lines",
-          line:{color:"#00ff99",width:2}
-        }],
-        spectrumLayout
-        );
-Plotly.newPlot("constellation",
-  [
-          {
-            x:[],
-            y:[],
-            mode:"markers",
-            marker:{size:3,color:"#3b82f6"},
-            type:"scattergl"
-          }
-  ],
-        constellationLayout
+[{x:[],y:[],mode:"lines",line:{color:"#00ff99",width:2}}],
+spectrumLayout
 );
+
+Plotly.newPlot("constellation",
+[{x:[],y:[],mode:"markers",marker:{size:3,color:"#3b82f6"},type:"scattergl"}],
+constellationLayout
+);
+
 function rbwToFFT(fs,rbw){
 return 2**Math.round(Math.log2(fs/rbw));
 }
@@ -476,8 +496,24 @@ async function loadActiveComponents(){
     });
 }
 
+function resetWaterfall() {
+  if (!wfBuffer) return;
+  // Zero out all buffers so old freq-range data doesn't linger
+  wfBuffer.data.fill(0);
+  if (wfPowerBuf) wfPowerBuf.fill(0);
+  if (wfTimeBuf)  wfTimeBuf.fill(0);
+  wfRows = 0;
+  wfNewestTime = 0;
+  wfCtx.putImageData(wfBuffer, 0, 0);
+  // Clear the Y-axis SVG
+  const svg = document.getElementById("waterfallAxisY");
+  if (svg) svg.innerHTML = "";
+}
+
 async function applySettings(){
 updateYAxis();
+// Reset autoscale peak tracker so it re-adapts to the new span
+yPeakSmooth = null;
 const center=Number(document.getElementById("center").value);
 const span=Number(document.getElementById("span").value);
 const rbw=Number(document.getElementById("rbw").value);
@@ -495,12 +531,13 @@ vbw:0.2
 })
 }
 );
+// Clear waterfall so it redraws with the new freq axis
+resetWaterfall();
 }
 
 async function loadComponents(){
 const res=await fetch("http://localhost:8000/rf/component_types");
 componentDefs=await res.json();
-console.log(componentDefs);
 const sel=document.getElementById("waveType");
 sel.innerHTML="";
 for(const name in componentDefs){
@@ -522,13 +559,13 @@ wrapper.style.display="flex";
 wrapper.style.alignItems="center";
 wrapper.style.gap="4px";
 const label=document.createElement("span");
-label.textContent = field.unit ? `${field.label} [${field.unit}]` : field.label;
+label.textContent=field.name;
 label.style.color="#aaa";
 label.style.fontSize="12px";
 const input=document.createElement("input");
 input.id="field_"+field.name;
-input.value = field.default ?? "";
-input.placeholder = field.label;
+input.value=field.default ?? "";
+input.placeholder=field.name;
 wrapper.appendChild(label);
 wrapper.appendChild(input);
 div.appendChild(wrapper);
@@ -566,24 +603,38 @@ document.getElementById("runBtn").textContent=running?"STOP":"START";
 
 document.getElementById("applyY").onclick=applySettings;
 
-document.getElementById("toggleWaterfall").onclick=()=>{
-    waterfallEnabled=!waterfallEnabled;
-    const wfContainer=document.getElementById("waterfallContainer");
-    const btn=document.getElementById("toggleWaterfall");
-    if(waterfallEnabled){
-        wfContainer.style.display="block";
-        btn.textContent="Waterfall ON";
-        // defer so browser has laid out the now-visible container
-        requestAnimationFrame(()=>{
-            resizeWaterfallCanvas();
-            Plotly.Plots.resize("plot");
-        });
-    }else{
-        wfContainer.style.display="none";
-        btn.textContent="Waterfall OFF";
-        Plotly.Plots.resize("plot");
-    }
-};
+// ── Panel toggle ──────────────────────────────────────────────
+function resizeAllPanels() {
+  // Plotly panels
+  ["plot","constellation"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && el.classList.contains("visible")) Plotly.Plots.resize(id);
+  });
+  // Waterfall canvas
+  const wfc = document.getElementById("waterfallContainer");
+  if (wfc && wfc.classList.contains("visible")) resizeWaterfallCanvas();
+}
+
+document.querySelectorAll(".viewBtn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const panelId = btn.dataset.panel;
+    const panel   = document.getElementById(panelId);
+    const isOn    = panel.classList.contains("visible");
+
+    // Spectrum panel (plot) cannot be hidden — always keep at least one
+    const visibleCount = document.querySelectorAll(".panel.visible").length;
+    if (isOn && panelId === "plot") return;
+    if (isOn && visibleCount === 1) return;
+
+    panel.classList.toggle("visible", !isOn);
+    btn.classList.toggle("active", !isOn);
+
+    // Update waterfall state flag
+    if (panelId === "waterfallContainer") waterfallEnabled = !isOn;
+
+    requestAnimationFrame(resizeAllPanels);
+  });
+});
 
 await loadComponents();
 const ws=new WebSocket("ws://localhost:8000/rf/stream");
@@ -594,6 +645,15 @@ if(!running) return;
 const data=JSON.parse(event.data);
 currentFs=data.sample_rate;
 const freqMHz=data.freq_hz.map(f=>f/1e6);
+
+autoscaleY(data.power_db);
+
+Plotly.react(
+"plot",
+[{x:freqMHz,y:data.power_db,mode:"lines",line:{color:"#00ff99",width:2}}],
+spectrumLayout
+);
+
 if(data.iq_i && data.iq_q){
 Plotly.react(
 "constellation",
@@ -601,11 +661,6 @@ Plotly.react(
 constellationLayout
 );
 }
-Plotly.react(
-"plot",
-[{x:freqMHz,y:data.power_db,mode:"lines",line:{color:"#00ff99",width:2}}],
-spectrumLayout
-);
 
 if(waterfallEnabled){
     drawWaterfallRow(data.power_db, freqMHz, data.time_sec);

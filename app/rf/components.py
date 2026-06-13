@@ -45,7 +45,7 @@ class CWTone(Waveform):
         {
             "name": "phase",
             "label": "Phase",
-            "unit": "rad",
+            "unit": "degrees",
             "default": 0.0,
         }
     ]
@@ -59,7 +59,7 @@ class CWTone(Waveform):
     ):
         self.freq = freq
         self.power_dbm = power_dbm
-        self.phase = phase
+        self.phase = np.deg2rad(phase)
         self.name = name
 
         power_mw = 10 ** (power_dbm / 10)
