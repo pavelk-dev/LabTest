@@ -9,6 +9,7 @@ class SpectrumAnalyzer:
 
         self.vbw_alpha = vbw_alpha
         self._avg_psd = None
+        self.freqs = []
 
     def fft(self,iq = IQData, window_name=None):
         x, w_power = window(iq.samples, window_name)
@@ -27,9 +28,9 @@ class SpectrumAnalyzer:
 
         power_dbm = (10 * np.log10(power_bin + 1e-20))
 
-        freqs = np.fft.fftshift(np.fft.fftfreq(len(x), d=1 / iq.sample_rate))
+        self.freqs = np.fft.fftshift(np.fft.fftfreq(len(x), d=1 / iq.sample_rate))
 
-        return freqs, power_dbm
+        return power_dbm
 
     def peak_power_db(self):
         _, p = self.fft()

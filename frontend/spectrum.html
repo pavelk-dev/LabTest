@@ -615,6 +615,7 @@ let _modalEditId = null;
 let _modalType = "";
 let componentDefs = {};
 let blockDefs     = {};
+let status = {};
 
 function openAddModal(mode) {
   _modalMode   = mode;
@@ -770,7 +771,9 @@ async function loadComponentDefs() {
 async function loadBlockDefs() {
   blockDefs = await fetch("http://localhost:8000/rf/block_types").then(r=>r.json());
 }
-
+async function loadStatus(){
+  status = await fetch("http://localhost:8000/rf/status").then(r=>r.json())
+}
 function resetWaterfall() {
   if (!wfBuffer) return;
   // Zero out all buffers so old freq-range data doesn't linger
@@ -808,6 +811,7 @@ vbw:0.2
 );
 // Clear waterfall so it redraws with the new freq axis
 resetWaterfall();
+loadStatus();
 }
 
 async function loadComponents(){
@@ -865,31 +869,41 @@ await loadBlockDefs();
 const ws=new WebSocket("ws://localhost:8000/rf/stream");
 await loadActiveComponents();
 await loadBlocks();
-
+await loadStatus();
+ws.binaryType = "arraybuffer"
 ws.onmessage=(event)=>{
 if(!running) return;
-const data=JSON.parse(event.data);
-currentFs=data.sample_rate;
-const freqMHz=data.freq_hz.map(f=>f/1e6);
+const buf = event.data;
+const dv = new DataView(buf);
+let off = 0;
+const timeSec = dv.getFloat64(off, true);
+off += 8;
+const power_db = new Float32Array(buf, off, status.fft_size);
+off += status.fft_size * 4;
+const iq_i = new Float32Array(buf, off, status.fft_size);
+off += status.fft_size * 4;
+const iq_q = new Float32Array(buf, off, status.fft_size);
+currentFs=status.sample_rate;
+const freqMHz=status.freqs.map(f=>f/1e6);
 
-autoscaleY(data.power_db);
+autoscaleY(power_db);
 
 Plotly.react(
 "plot",
-[{x:freqMHz,y:data.power_db,mode:"lines",line:{color:"#00ff99",width:2}}],
+[{x:freqMHz,y:power_db,mode:"lines",line:{color:"#00ff99",width:2}}],
 spectrumLayout
 );
 
-if(data.iq_i && data.iq_q){
+if(iq_i && iq_q){
 Plotly.react(
 "constellation",
-[{x:data.iq_i,y:data.iq_q,mode:"markers",marker:{size:3,color:"#3b82f6"},type:"scattergl"}],
+[{x:iq_i,y:iq_q,mode:"markers",marker:{size:3,color:"#3b82f6"},type:"scattergl"}],
 constellationLayout
 );
 }
 
 if(waterfallEnabled){
-    drawWaterfallRow(data.power_db, freqMHz, data.time_sec);
+    drawWaterfallRow(power_db, freqMHz, timeSec);
 }
 };
 };

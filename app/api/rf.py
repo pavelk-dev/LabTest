@@ -6,7 +6,7 @@ from app.rf.session import rf_session
 from app.rf.waveform_registry import WAVEFORM_REGISTRY
 from app.rf.rf_blocks_registry import RF_BLOCK_REGISTRY
 import asyncio
-import inspect
+import struct
 
 from app.rf.rf_blocks import apply_chain
 
@@ -53,9 +53,7 @@ async def dsp_loop():
 
 
 
-@router.patch(
-    "/rf/components/{id}"
-)
+@router.patch("/rf/components/{id}")
 async def patch_component(id:int, req:ComponentPatch):
 
     c= rf_session.synth._components[id]
@@ -187,7 +185,12 @@ async def update_settings(settings: RFSettings):
     rf_session.analyzer.vbw_alpha = settings.vbw
 
     return {"ok": True}
-
+@router.get("/rf/status")
+async def status():
+    return { "sample_rate": rf_session.latest_recording.iq.sample_rate,
+             "freqs": (rf_session.analyzer.freqs + rf_session.synth.center_freq).tolist(),
+             "fft_size": len(rf_session.analyzer.freqs),
+             }
 @router.websocket("/rf/stream")
 async def rf_stream(websocket: WebSocket):
     await websocket.accept()
@@ -200,28 +203,20 @@ async def rf_stream(websocket: WebSocket):
             enabled_blocks = [
                 b["block"]
                 for b in rf_session.rf_blocks
-                if b["enabled"]
-            ]
+                if b["enabled"]]
             recording.iq = apply_chain(enabled_blocks, recording.iq)
-            mag = np.abs(recording.iq.samples)
-            noise_floor = np.percentile(mag, 50)
-            signal_level = np.percentile(mag, 90)
-            threshold = noise_floor + 0.3 * (signal_level - noise_floor)
-            mask = mag > threshold
-            normalized = recording.iq.samples[mask] / np.percentile(mag[mask], 75)
-            i_vis = normalized.real
-            q_vis = normalized.imag
+            i_vis = recording.iq.samples.real
+            q_vis = recording.iq.samples.imag
             if recording is not None:
-                freqs, power_db = (rf_session.analyzer.fft(recording.iq, rf_session.window))
-                freqs += rf_session.synth.center_freq
-                await websocket.send_json({
-                    "freq_hz": freqs.tolist(),
-                    "power_db": power_db.tolist(),
-                    "sample_rate": recording.iq.sample_rate,
-                    "time_sec": rf_session.synth.time_sec,
-                    "iq_i": i_vis.tolist(),
-                    "iq_q": q_vis.tolist(),
-                })
+                power_db = (rf_session.analyzer.fft(recording.iq, rf_session.window))
+                header = struct.pack("<d", rf_session.synth.time_sec)
+                payload = (
+                        header
+                        + power_db.astype(np.float32).tobytes()
+                        + i_vis.astype(np.float32).tobytes()
+                        + q_vis.astype(np.float32).tobytes()
+                )
+                await websocket.send_bytes(payload)
 
             await asyncio.sleep(frame_delta)
 
