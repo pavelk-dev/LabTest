@@ -77,7 +77,7 @@ class CWTone(Waveform):
 
     def to_dict(self) -> dict:
         return dict(type="CWTone", name=self.name,
-                    freq=self.freq, amplitude=self.power_dbm,
+                    freq=self.freq, power_dbm=self.power_dbm,
                     phase=self.phase)
 
     @classmethod

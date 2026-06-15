@@ -4,8 +4,11 @@ from starlette.websockets import WebSocketDisconnect
 import numpy as np
 from app.rf.session import rf_session
 from app.rf.waveform_registry import WAVEFORM_REGISTRY
+from app.rf.rf_blocks_registry import RF_BLOCK_REGISTRY
 import asyncio
 import inspect
+
+from app.rf.rf_blocks import apply_chain
 
 router = APIRouter()
 fps = 20
@@ -20,8 +23,19 @@ class RFSettings(BaseModel):
 class ComponentRequest(BaseModel):
     type: str
     params: dict
+
 class ComponentPatch(BaseModel):
     enabled: bool | None = None
+    params: dict | None = None
+
+class RFBlockRequest(BaseModel):
+    type: str
+    params: dict
+
+class RFBlockPatch(BaseModel):
+    enabled: bool | None = None
+    params: dict | None = None
+
 async def dsp_loop():
     try:
         while True:
@@ -43,9 +57,17 @@ async def dsp_loop():
     "/rf/components/{id}"
 )
 async def patch_component(id:int, req:ComponentPatch):
+
     c= rf_session.synth._components[id]
     if(req.enabled is not None):
         c["enabled"]=req.enabled
+    if req.params:
+        old_component = c["waveform"]
+        params = old_component.to_dict()
+        params.pop("type", None)
+        params.update(req.params)
+        print(req.params)
+        c["waveform"] = type(old_component)(**params)
     return {"ok":True}
 
 @router.delete("/rf/components/{id}")
@@ -60,6 +82,66 @@ async def list_components():
     return {
         name: cls.PARAMS
         for name, cls in WAVEFORM_REGISTRY.items()}
+
+@router.get("/rf/block_types")
+async def list_block_types():
+    return {
+        name: cls.PARAMS
+        for name, cls in RF_BLOCK_REGISTRY.items()
+    }
+@router.get("/rf/blocks")
+async def list_blocks():
+
+    out = []
+
+    for i, b in enumerate(rf_session.rf_blocks):
+
+        out.append({
+            "id": i,
+            "enabled": b["enabled"],
+            "block": b["block"].to_dict()
+        })
+
+    return out
+
+@router.post("/rf/blocks")
+async def add_block(req: RFBlockRequest):
+
+    cls = RF_BLOCK_REGISTRY[req.type]
+
+    block = cls(**req.params)
+
+    rf_session.rf_blocks.append({
+        "id": rf_session.rf_block_id_count,
+        "enabled": True,
+        "block": block
+    })
+    rf_session.rf_block_id_count += 1
+
+    return {"ok": True}
+
+@router.patch("/rf/blocks/{id}")
+async def patch_block(id: int, req: RFBlockPatch):
+
+    block = rf_session.rf_blocks[id]
+    print(req.model_dump())
+    if req.enabled is not None:
+        block["enabled"] = req.enabled
+
+    if req.params:
+        old_rf_block = block["block"]
+        params = old_rf_block.to_dict()
+        params.pop("type", None)
+        params.update(req.params)
+        block["block"] = type(old_rf_block)(**params)
+    return {"ok": True}
+
+@router.delete("/rf/blocks/{id}")
+async def delete_block(id: int):
+
+    del rf_session.rf_blocks[id]
+
+    return {"ok": True}
 @router.get("/rf/components")
 async def list_components():
 
@@ -115,6 +197,12 @@ async def rf_stream(websocket: WebSocket):
         while True:
 
             recording = rf_session.latest_recording
+            enabled_blocks = [
+                b["block"]
+                for b in rf_session.rf_blocks
+                if b["enabled"]
+            ]
+            recording.iq = apply_chain(enabled_blocks, recording.iq)
             mag = np.abs(recording.iq.samples)
             noise_floor = np.percentile(mag, 50)
             signal_level = np.percentile(mag, 90)
