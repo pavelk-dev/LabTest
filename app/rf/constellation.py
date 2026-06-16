@@ -1,61 +1,47 @@
 import numpy as np
+from abc import ABC
+class Constellation(ABC):
+    def __init__(self):
+        pass
+class QAMConstellation(Constellation):
+    def __init__(self, order: int):
+        self.order = order
 
+        m = int(np.sqrt(order))
+        if m * m != order:
+            raise ValueError("QAM order must be square")
 
-@staticmethod
-def gray(n: int) -> int:
-    return n ^ (n >> 1)
+        bits_per_axis = int(np.log2(m))
 
-class QAMConstellation:
+        levels = np.arange(-(m - 1), m, 2)
 
-    def __init__(self, M: int):
+        self.symbols = []
+        self.bits = []
 
-        self.M = M
+        for i in range(m):
+            for q in range(m):
+                gray_i = i ^ (i >> 1)
+                gray_q = q ^ (q >> 1)
 
-        self.m = int(np.sqrt(M))
+                bits = (
+                        format(gray_i, f"0{bits_per_axis}b")
+                        + format(gray_q, f"0{bits_per_axis}b")
+                )
 
-        if self.m * self.m != M:
-            raise ValueError("M must be square")
+                sym = levels[i] + 1j * levels[q]
 
-        self.bits_per_axis = int(np.log2(self.m))
-        self.bits_per_symbol = int(np.log2(M))
+                self.symbols.append(sym)
+                self.bits.append(bits)
 
-        self.points = []
-        self.symbol_bits = []
-        self.bit_to_symbol = {}
+        self.symbols = np.array(self.symbols)
 
-        self._build()
+        # normalize average power = 1
+        self.symbols /= np.sqrt(np.mean(np.abs(self.symbols) ** 2))
 
-    def _build(self):
+        self.bits_to_symbol = {
+            b: s for b, s in zip(self.bits, self.symbols)
+        }
 
-        levels = np.arange(-(self.m - 1),self.m,2)
-
-        for q_bin in range(self.m):
-
-            q_gray = self.gray(q_bin)
-
-            for i_bin in range(self.m):
-
-                i_gray = self.gray(i_bin)
-
-                point = (levels[i_bin]+ 1j * levels[q_bin])
-
-                bits = []
-
-                for b in reversed(range(self.bits_per_axis)):
-                    bits.append((i_gray >> b) & 1)
-
-                for b in reversed(range(self.bits_per_axis)):
-                    bits.append((q_gray >> b) & 1)
-
-                bits = tuple(bits)
-
-                symbol_index = len(self.points)
-
-                self.points.append(point)
-                self.symbol_bits.append(bits)
-
-                self.bit_to_symbol[bits] = symbol_index
-
-        self.points = np.asarray(self.points)
-
-        self.points /= np.sqrt(np.mean(np.abs(self.points) ** 2))
+        self.symbol_to_bits = {
+            i: b for i, b in enumerate(self.bits)
+        }

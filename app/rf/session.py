@@ -20,5 +20,7 @@ class RFSession:
             "enabled": False,
             }]
         self.rf_block_id_count = 1
+        self.constellation_mode = "raw"
+        self.demodulator = None
 
 rf_session = RFSession()

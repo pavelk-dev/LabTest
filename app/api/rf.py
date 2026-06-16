@@ -1,10 +1,11 @@
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, WebSocket, HTTPException
 from pydantic import BaseModel
 from starlette.websockets import WebSocketDisconnect
 import numpy as np
 from app.rf.session import rf_session
 from app.rf.waveform_registry import WAVEFORM_REGISTRY
 from app.rf.rf_blocks_registry import RF_BLOCK_REGISTRY
+from app.rf.demodulators import *
 import asyncio
 import struct
 
@@ -13,12 +14,15 @@ from app.rf.rf_blocks import apply_chain
 router = APIRouter()
 fps = 20
 frame_delta = 1 / fps
-
+class DemodulatorConfig(BaseModel):
+    type: str
+    params: dict = {}
 class RFSettings(BaseModel):
     center_freq: float
     sample_rate: float
     fft_size: int
     vbw: float
+    constellation_mode: str = "raw"
 
 class ComponentRequest(BaseModel):
     type: str
@@ -168,8 +172,56 @@ async def add_component(req: ComponentRequest):
 from pydantic import BaseModel
 
 class RunRequest(BaseModel): running: bool
+@router.get("/rf/demodulator")
+async def get_demodulator():
 
+    if rf_session.demodulator is None:
+        return None
 
+    return rf_session.demodulator.to_dict()
+@router.post("/rf/demodulator")
+async def set_demodulator(cfg: DemodulatorConfig):
+
+    if cfg.type == "QAM":
+        rf_session.demodulator = QAMDemodulator(
+            **cfg.params
+        )
+
+    else:
+        raise HTTPException(
+            400,
+            f"Unknown demodulator {cfg.type}"
+        )
+
+    return {"ok": True}
+
+@router.patch("/rf/demodulator")
+async def patch_demodulator(cfg: DemodulatorConfig):
+
+    old = rf_session.demodulator
+
+    if old is None:
+        raise HTTPException(
+            404,
+            "No active demodulator"
+        )
+
+    params = old.to_dict()
+    params.pop("type", None)
+
+    params.update(cfg.params)
+
+    rf_session.demodulator = type(old)(
+        **params
+    )
+
+    return {"ok": True}
+@router.delete("/rf/demodulator")
+async def remove_demodulator():
+
+    rf_session.demodulator = None
+
+    return {"ok": True}
 @router.post("/rf/run")
 async def set_run(req: RunRequest):
     print(rf_session.running)
@@ -183,6 +235,7 @@ async def update_settings(settings: RFSettings):
     rf_session.synth.sample_rate = settings.sample_rate
     rf_session.synth.N = settings.fft_size
     rf_session.analyzer.vbw_alpha = settings.vbw
+    rf_session.constellation_mode = settings.constellation_mode
 
     return {"ok": True}
 @router.get("/rf/status")
@@ -205,11 +258,33 @@ async def rf_stream(websocket: WebSocket):
                 for b in rf_session.rf_blocks
                 if b["enabled"]]
             recording.iq = apply_chain(enabled_blocks, recording.iq)
-            i_vis = recording.iq.samples.real
-            q_vis = recording.iq.samples.imag
+            samples = recording.iq.samples
+
+            if rf_session.constellation_mode == "raw":
+                rms = np.sqrt(np.mean(np.abs(samples) ** 2))
+
+                if rms > 0:
+                    normalized = samples / rms
+                else:
+                    normalized = samples
+                i_vis = normalized.real
+                q_vis = normalized.imag
+
+            elif rf_session.constellation_mode == "symbols" and rf_session.demodulator is not None:
+                result = rf_session.demodulator.demodulate(recording.iq)
+
+
+                i_vis = result.recovered_symbols.real
+                q_vis = result.recovered_symbols.imag
+
+            else:
+
+                i_vis = np.empty(0, dtype=np.float32)
+                q_vis = np.empty(0, dtype=np.float32)
+
             if recording is not None:
                 power_db = (rf_session.analyzer.fft(recording.iq, rf_session.window))
-                header = struct.pack("<d", rf_session.synth.time_sec)
+                header = struct.pack("<dI", rf_session.synth.time_sec, len(i_vis))
                 payload = (
                         header
                         + power_db.astype(np.float32).tobytes()

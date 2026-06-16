@@ -17,7 +17,10 @@ Available components:
 from __future__ import annotations
 import numpy as np
 from typing import Optional, Sequence
+
+from app.rf.pulseshaper import *
 from .waveform import Waveform, IQData
+from app.rf.constellation import *
 
 
 def _awgn(N: int, sigma: float) -> np.ndarray:
@@ -554,7 +557,94 @@ class QPSKWaveform(Waveform):
         return cls(d["freq"], d["symbol_rate"], d.get("power_dbm"),
                    d.get("symbols"), d.get("name", "QPSK"))
 
+class QAMWaveform(Waveform):
 
+    PARAMS = [
+        {"name": "freq", "label": "Frequency", "unit": "Hz", "default": 100e6},
+        {"name": "symbol_rate", "label": "Sym Rate", "unit": "Sym/Sec", "default": 1e6},
+        {"name": "order", "label": "Order", "default": 16},
+        {"name": "power_dbm", "label": "Power", "unit": "dBm", "default": -30},
+    ]
+
+    def __init__(
+        self,
+        freq: float = 0,
+        symbol_rate: float = 1e6,
+        order: int = 16,
+        power_dbm: float = -30,
+        pulse_shape = RootRaisedCosine(),
+        symbols=None,
+        name="QAM",
+    ):
+        self.freq = freq
+        self.symbol_rate = symbol_rate
+        self.order = order
+        self.power_dbm = power_dbm
+        self.bw = self.symbol_rate * 2
+        self.symbols = symbols
+        self.pulse_shape = (pulse_shape or RectangularPulse())
+        self.name = name
+        power_mw = 10 ** (self.power_dbm / 10)
+        self.amplitude = np.sqrt(power_mw)
+
+        self.constellation = QAMConstellation(order)
+
+    def generate_chunk(
+        self,
+        N: int,
+        fs: float,
+        t0: float = 0,
+        bb_freq: float = 0,
+    ) -> IQData:
+
+        sps = max(1, int(round(fs / self.symbol_rate)))
+        n_syms = int(np.ceil(N / sps))
+
+        if self.symbols is not None:
+            reps = int(np.ceil(n_syms / len(self.symbols)))
+            idx = (self.symbols * reps)[:n_syms]
+        else:
+            idx = np.random.randint(
+                0,
+                self.order,
+                size=n_syms,
+            )
+
+        symbols = self.constellation.symbols[idx]
+
+        baseband = self.pulse_shape.shape(symbols, sps)[:N]
+        t = t0 + np.arange(N) / fs
+
+        samples = (
+            self.amplitude
+            * baseband
+            * np.exp(1j * 2 * np.pi * bb_freq * t)
+        )
+
+        return IQData(samples, fs)
+
+    def to_dict(self) -> dict:
+        return dict(
+            type="QAMWaveform",
+            name=self.name,
+            freq=self.freq,
+            symbol_rate=self.symbol_rate,
+            order=self.order,
+            power_dbm=self.power_dbm,
+            # optional: only if you want reproducible streams
+            symbols=self.symbols,
+        )
+
+    @classmethod
+    def _from_dict(cls, d: dict) -> "QAMWaveform":
+        return cls(
+            freq=d["freq"],
+            symbol_rate=d["symbol_rate"],
+            order=d.get("order", 16),
+            power_dbm=d.get("power_dbm", -30.0),
+            symbols=d.get("symbols"),
+            name=d.get("name", "QAM"),
+        )
 class ScriptWaveform(Waveform):
     """
     User-defined waveform via a Python expression or callable.

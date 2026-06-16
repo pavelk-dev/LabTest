@@ -33,6 +33,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0f14;color:#ddd;fon
 }
 #componentList{ background:#111827; }
 #blockList    { background:#0d1117; }
+#demodList    { background:#0a0d1a; }
 
 /* hide strip when only the add-button is inside */
 #componentList:has(.componentRow:first-of-type),
@@ -45,6 +46,20 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0f14;color:#ddd;fon
   white-space:nowrap;flex-shrink:0;
 }
 .addPillBtn.amber{color:#f59e0b;border-color:#f59e0b;background:#1a1200;}
+.addPillBtn.violet{color:#a78bfa;border-color:#a78bfa;background:#0d0a1a;}
+
+/* demodulator pills */
+.demodRow{
+    display:inline-flex;align-items:center;gap:5px;padding:2px 8px;
+    background:#0d0a1a;border:1px solid #4c1d95;border-radius:4px;
+    font-size:12px;white-space:nowrap;flex-shrink:0;
+}
+.demodRow .d-name{color:#a78bfa;font-weight:bold;}
+.demodRow .d-detail{color:#888;font-size:11px;}
+.demodRow button{
+  padding:1px 6px;font-size:11px;border-radius:3px;cursor:pointer;
+  background:#1f2937;color:#ccc;border:1px solid #374151;
+}
 
 /* signal source pills */
 .componentRow{
@@ -110,6 +125,9 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0f14;color:#ddd;fon
 }
 #itemModalBox.sig #itemModalConfirm{background:#00c97a;color:#000;}
 #itemModalBox.blk #itemModalConfirm{background:#f59e0b;color:#000;}
+#itemModalBox.dem #itemModalConfirm{background:#a78bfa;color:#000;}
+#itemModalBox.dem{ border:1px solid #4c1d95; }
+#itemModalBox.dem #itemModalTitle{ color:#a78bfa; }
 
 /* ── panels ── */
 #plots{flex:1;min-height:0;display:flex;flex-direction:column;}
@@ -142,6 +160,12 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0f14;color:#ddd;fon
   <span>Range</span><input id="range" value="100">
   <span>RBW</span><input id="rbw" value="5e3">
   <button id="runBtn">STOP</button>
+  <span>Constellation</span>
+  <select id="constellationMode" style="width:80px;background:#0b0f14;border:1px solid #374151;color:#00ff99;padding:5px;">
+    <option value="raw">Raw IQ</option>
+    <option value="symbols">Symbols</option>
+    <option value="off">Off</option>
+  </select>
   <button id="applyY">Apply</button>
 </div>
 
@@ -159,6 +183,10 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0f14;color:#ddd;fon
 
 <div id="blockList">
   <button class="addPillBtn amber" id="addBlockBtn">+ RF Block</button>
+</div>
+
+<div id="demodList">
+  <button class="addPillBtn violet" id="addDemodBtn">+ Demodulator</button>
 </div>
 
 <!-- Shared add/edit modal -->
@@ -617,6 +645,112 @@ let componentDefs = {};
 let blockDefs     = {};
 let status = {};
 
+// ── Demodulator state ──────────────────────────────────────────────────────
+const DEMOD_DEFS = {
+  QAM: [
+    { name:"M",           label:"Constellation order M", default:16 },
+    { name:"symbol_rate", label:"Symbol rate",            unit:"sym/s", default:1e6 },
+  ]
+};
+
+async function loadDemod() {
+  const res = await fetch("http://localhost:8000/rf/demodulator");
+  const d   = await res.json();           // null when none active
+  const strip = document.getElementById("demodList");
+  strip.querySelectorAll(".demodRow").forEach(el => el.remove());
+  document.getElementById("addDemodBtn").style.display = d ? "none" : "";
+  if (!d) return;
+
+  // Normalise type key: backend returns "QAMDemodulator", keys are "QAM"
+  const shortType = d.type.replace("Demodulator","");
+  const pill = document.createElement("div");
+  pill.className = "demodRow";
+  pill.innerHTML =
+    `<span class="d-name">${d.type}</span>
+     <span class="d-detail">${demodSummary(d)}</span>
+     <button onclick="openDemodEdit()">Edit</button>
+     <button onclick="deleteDemod()">✕</button>`;
+  strip.appendChild(pill);
+}
+
+function demodSummary(d) {
+  if (d.type === "QAMDemodulator")
+    return `${d.M}-QAM  ${(d.symbol_rate/1e3).toFixed(0)} ksym/s`;
+  return "";
+}
+
+window.deleteDemod = async function() {
+  await fetch("http://localhost:8000/rf/demodulator", {method:"DELETE"});
+  await loadDemod();
+};
+
+function openDemodAdd() {
+  _modalMode   = "dem";
+  _modalAction = "add";
+  _modalEditId = null;
+  _modalType   = "QAM";
+  const box   = document.getElementById("itemModalBox");
+  const title = document.getElementById("itemModalTitle");
+  const sel   = document.getElementById("itemTypeSelect");
+  box.className = "dem";
+  title.textContent = "Add Demodulator";
+  document.getElementById("itemModalConfirm").textContent = "Add";
+
+  sel.innerHTML = "";
+  for (const name in DEMOD_DEFS) {
+    const o = document.createElement("option");
+    o.value = name; o.textContent = name + " Demodulator";
+    sel.appendChild(o);
+  }
+  sel.style.display = "";
+
+  renderDemodFields("QAM", {});
+  document.getElementById("itemModal").classList.add("open");
+}
+
+window.openDemodEdit = async function() {
+  _modalMode   = "dem";
+  _modalAction = "edit";
+  _modalType   = "QAM";
+  const box   = document.getElementById("itemModalBox");
+  const title = document.getElementById("itemModalTitle");
+  const sel   = document.getElementById("itemTypeSelect");
+  box.className = "dem";
+  title.textContent = "Edit Demodulator — QAM";
+  document.getElementById("itemModalConfirm").textContent = "Save";
+  sel.style.display = "none";
+
+  const d = await fetch("http://localhost:8000/rf/demodulator").then(r=>r.json());
+  renderDemodFields("QAM", d || {});
+  document.getElementById("itemModal").classList.add("open");
+};
+
+function renderDemodFields(type, current) {
+  const div = document.getElementById("itemModalFields");
+  div.innerHTML = "";
+  (DEMOD_DEFS[type] || []).forEach(f => {
+    const row = document.createElement("div");
+    row.className = "mfRow";
+    const label = document.createElement("label");
+    label.textContent = f.unit ? `${f.label} [${f.unit}]` : f.label;
+    const input = document.createElement("input");
+    input.id    = "mf_" + f.name;
+    input.value = current[f.name] ?? f.default ?? "";
+    row.appendChild(label); row.appendChild(input);
+    div.appendChild(row);
+  });
+}
+
+function collectDemodParams(type) {
+  const params = {};
+  (DEMOD_DEFS[type] || []).forEach(f => {
+    const raw = (document.getElementById("mf_" + f.name)?.value ?? "").trim();
+    if (raw === "" || raw === "null") { params[f.name] = null; }
+    else { const n = Number(raw); params[f.name] = Number.isNaN(n) ? raw : n; }
+  });
+  return params;
+}
+
 function openAddModal(mode) {
   _modalMode   = mode;
   _modalAction = "add";
@@ -731,6 +865,27 @@ function collectModalParams(typeName) {
 }
 
 document.getElementById("itemModalConfirm").onclick = async () => {
+  // ── Demodulator path ────────────────────────────────────────────
+  if (_modalMode === "dem") {
+    const type   = document.getElementById("itemTypeSelect").value || _modalType;
+    const params = collectDemodParams(type);
+    if (_modalAction === "add") {
+      await fetch("http://localhost:8000/rf/demodulator", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({type, params}),
+      });
+    } else {
+      await fetch("http://localhost:8000/rf/demodulator", {
+        method:"PATCH", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({type, params}),
+      });
+    }
+    closeModal();
+    await loadDemod();
+    return;
+  }
+
+  // ── Signal / RF block path (unchanged) ──────────────────────────
   const type   = _modalAction === "edit" ? _modalType : document.getElementById("itemTypeSelect").value;
   const params = collectModalParams(type);
 
@@ -742,7 +897,6 @@ document.getElementById("itemModalConfirm").onclick = async () => {
       body: JSON.stringify({type, params}),
     });
   } else {
-    // PATCH — send only the changed fields
     const url = _modalMode === "sig"
       ? `http://localhost:8000/rf/components/${_modalEditId}`
       : `http://localhost:8000/rf/blocks/${_modalEditId}`;
@@ -758,12 +912,19 @@ document.getElementById("itemModalConfirm").onclick = async () => {
 };
 
 document.getElementById("itemModalCancel").onclick = closeModal;
-document.getElementById("itemTypeSelect").onchange  = renderModalFields;
+document.getElementById("itemTypeSelect").onchange  = () => {
+  if (_modalMode === "dem") {
+    renderDemodFields(document.getElementById("itemTypeSelect").value, {});
+  } else {
+    renderModalFields();
+  }
+};
 document.getElementById("itemModal").addEventListener("click", e => {
   if (e.target === document.getElementById("itemModal")) closeModal();
 });
 document.getElementById("addComponentBtn").onclick = () => openAddModal("sig");
 document.getElementById("addBlockBtn").onclick     = () => openAddModal("blk");
+document.getElementById("addDemodBtn").onclick     = () => openDemodAdd();
 
 async function loadComponentDefs() {
   componentDefs = await fetch("http://localhost:8000/rf/component_types").then(r=>r.json());
@@ -805,7 +966,8 @@ body:JSON.stringify({
 center_freq:center,
 sample_rate:span,
 fft_size:fft,
-vbw:0.2
+vbw:0.2,
+constellation_mode:document.getElementById("constellationMode").value
 })
 }
 );
@@ -869,6 +1031,7 @@ await loadBlockDefs();
 const ws=new WebSocket("ws://localhost:8000/rf/stream");
 await loadActiveComponents();
 await loadBlocks();
+await loadDemod();
 await loadStatus();
 ws.binaryType = "arraybuffer"
 ws.onmessage=(event)=>{
@@ -878,11 +1041,14 @@ const dv = new DataView(buf);
 let off = 0;
 const timeSec = dv.getFloat64(off, true);
 off += 8;
+const constLen = dv.getUint32(off, true);
+off += 4;
+
 const power_db = new Float32Array(buf, off, status.fft_size);
 off += status.fft_size * 4;
-const iq_i = new Float32Array(buf, off, status.fft_size);
-off += status.fft_size * 4;
-const iq_q = new Float32Array(buf, off, status.fft_size);
+const iq_i = new Float32Array(buf, off, constLen);
+off += constLen * 4;
+const iq_q = new Float32Array(buf, off, constLen);
 currentFs=status.sample_rate;
 const freqMHz=status.freqs.map(f=>f/1e6);
 
@@ -893,8 +1059,10 @@ Plotly.react(
 [{x:freqMHz,y:power_db,mode:"lines",line:{color:"#00ff99",width:2}}],
 spectrumLayout
 );
-
-if(iq_i && iq_q){
+const constellationVisible =
+    document.getElementById("constellation")
+        .classList.contains("visible");
+if(constellationVisible){
 Plotly.react(
 "constellation",
 [{x:iq_i,y:iq_q,mode:"markers",marker:{size:3,color:"#3b82f6"},type:"scattergl"}],
