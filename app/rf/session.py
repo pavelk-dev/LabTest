@@ -22,5 +22,6 @@ class RFSession:
         self.rf_block_id_count = 1
         self.constellation_mode = "raw"
         self.demodulator = None
+        self.demodulator_graph = "time"
 
 rf_session = RFSession()

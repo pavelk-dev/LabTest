@@ -33,7 +33,6 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0f14;color:#ddd;fon
 }
 #componentList{ background:#111827; }
 #blockList    { background:#0d1117; }
-#demodList    { background:#0a0d1a; }
 
 /* hide strip when only the add-button is inside */
 #componentList:has(.componentRow:first-of-type),
@@ -46,20 +45,6 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0f14;color:#ddd;fon
   white-space:nowrap;flex-shrink:0;
 }
 .addPillBtn.amber{color:#f59e0b;border-color:#f59e0b;background:#1a1200;}
-.addPillBtn.violet{color:#a78bfa;border-color:#a78bfa;background:#0d0a1a;}
-
-/* demodulator pills */
-.demodRow{
-    display:inline-flex;align-items:center;gap:5px;padding:2px 8px;
-    background:#0d0a1a;border:1px solid #4c1d95;border-radius:4px;
-    font-size:12px;white-space:nowrap;flex-shrink:0;
-}
-.demodRow .d-name{color:#a78bfa;font-weight:bold;}
-.demodRow .d-detail{color:#888;font-size:11px;}
-.demodRow button{
-  padding:1px 6px;font-size:11px;border-radius:3px;cursor:pointer;
-  background:#1f2937;color:#ccc;border:1px solid #374151;
-}
 
 /* signal source pills */
 .componentRow{
@@ -133,8 +118,23 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0f14;color:#ddd;fon
 #plots{flex:1;min-height:0;display:flex;flex-direction:column;}
 .panel{flex:1;min-height:0;display:none;position:relative;}
 .panel.visible{display:flex;flex-direction:column;}
+#constellation.panel.visible{flex-direction:row;}
 .panel + .panel.visible{border-top:1px solid #2a3441;}
-#plot,#constellation{width:100%;height:100%;}
+#plot{width:100%;height:100%;}
+#constellationPlot{
+  flex:0 0 auto;
+  height:100%;
+  aspect-ratio:1/1;
+  max-width:100%;
+}
+#constellationSidebar{
+  flex:1;min-width:0;
+  display:flex;flex-direction:column;
+  border-left:1px solid #2a3441;
+  padding:10px;
+  color:#aaa;font-size:12px;
+  overflow-y:auto;
+}
 #waterfallCanvas{position:absolute;display:block;}
 #waterfallAxisX{position:absolute;bottom:0;left:80px;right:30px;height:20px;pointer-events:none;}
 #waterfallAxisY{position:absolute;top:0;left:0;width:80px;height:100%;pointer-events:none;overflow:visible;}
@@ -160,12 +160,6 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0f14;color:#ddd;fon
   <span>Range</span><input id="range" value="100">
   <span>RBW</span><input id="rbw" value="5e3">
   <button id="runBtn">STOP</button>
-  <span>Constellation</span>
-  <select id="constellationMode" style="width:80px;background:#0b0f14;border:1px solid #374151;color:#00ff99;padding:5px;">
-    <option value="raw">Raw IQ</option>
-    <option value="symbols">Symbols</option>
-    <option value="off">Off</option>
-  </select>
   <button id="applyY">Apply</button>
 </div>
 
@@ -183,10 +177,6 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0f14;color:#ddd;fon
 
 <div id="blockList">
   <button class="addPillBtn amber" id="addBlockBtn">+ RF Block</button>
-</div>
-
-<div id="demodList">
-  <button class="addPillBtn violet" id="addDemodBtn">+ Demodulator</button>
 </div>
 
 <!-- Shared add/edit modal -->
@@ -212,7 +202,50 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0f14;color:#ddd;fon
     <div    id="wfOverlay"></div>
     <div    id="wfTooltip"></div>
   </div>
-  <div id="constellation" class="panel"></div>
+  <div id="constellation" class="panel" style="flex-direction:row;">
+    <div id="constellationPlot"></div>
+    <div id="constellationSidebar">
+      <div style="display:flex;gap:12px;align-items:flex-start;flex:0 0 auto;">
+        <div style="flex:0 0 90px;">
+          <div style="color:#ddd;font-weight:bold;margin-bottom:4px;font-size:11px;">View</div>
+          <select id="constellationMode" style="width:100%;background:#0b0f14;border:1px solid #374151;color:#00ff99;padding:3px 4px;border-radius:3px;box-sizing:border-box;font-size:11px;">
+            <option value="raw">Raw IQ</option>
+            <option value="symbols">Symbols</option>
+            <option value="off">Off</option>
+          </select>
+          <label style="display:flex;align-items:center;gap:4px;margin-top:5px;cursor:pointer;user-select:none;font-size:10px;white-space:nowrap;">
+            <input type="checkbox" id="showRefPointsToggle" checked style="cursor:pointer;">
+            <span>Ref. pts</span>
+          </label>
+        </div>
+
+        <div style="flex:0 0 auto;border-left:1px solid #2a3441;padding-left:12px;">
+          <div style="color:#a78bfa;font-weight:bold;margin-bottom:4px;font-size:11px;">Demod</div>
+          <div id="constellationSidebarBody" style="font-size:11px;">No demodulator active.</div>
+        </div>
+
+        <div style="flex:1;min-width:0;display:flex;align-items:center;justify-content:flex-end;gap:8px;">
+          <span style="color:#ddd;font-weight:bold;font-size:11px;">Graph</span>
+          <select id="demodGraphMode" style="background:#0b0f14;border:1px solid #374151;color:#ccc;padding:2px 5px;border-radius:3px;box-sizing:border-box;font-size:11px;">
+            <option value="time">Error vs Time</option>
+            <option value="freq">Error vs Freq</option>
+          </select>
+          <span style="color:#ddd;font-weight:bold;font-size:11px;">EVM</span>
+          <button id="evmUnitToggle" style="padding:2px 7px;font-size:10px;background:#1f2937;color:#ccc;border:1px solid #374151;border-radius:3px;cursor:pointer;">%</button>
+          <span id="evmReadout" style="font-size:18px;color:#00ff99;font-family:monospace;white-space:nowrap;">—</span>
+        </div>
+      </div>
+
+      <div style="flex:1;min-height:0;display:flex;flex-direction:column;margin-top:8px;">
+        <canvas id="evmSparkline" style="width:100%;flex:1;min-height:0;background:#0b0f14;border:1px solid #1f2937;border-radius:3px;"></canvas>
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:#666;margin-top:2px;flex:0 0 auto;">
+          <span id="evmSparkMin">—</span>
+          <span id="evmSparkLabel" style="color:#888;">EVM per symbol (current chunk)</span>
+          <span id="evmSparkMax">—</span>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 </div>
@@ -453,6 +486,134 @@ function onWfHover(e) {
 // Parallel power buffer (Float32) so hover can read actual dB values
 let wfPowerBuf = null;
 
+// ── Ideal QAM reference constellation (top-level, available before onload) ──
+let currentQAM_M = null;
+let showRefPoints = true;
+let evmUnit = "pct"; // "pct" | "db"
+let lastEvmPercent = null;
+let lastEvmPerSymbol = null; // Float32Array/array of per-symbol EVM% for the current chunk
+
+function renderEvmReadout() {
+  const evmEl = document.getElementById("evmReadout");
+  if (!evmEl) return;
+  if (lastEvmPercent == null) { evmEl.textContent = "—"; return; }
+  if (evmUnit === "db") {
+    const evmDb = 20 * Math.log10(lastEvmPercent / 100);
+    evmEl.textContent = evmDb.toFixed(2) + " dB";
+  } else {
+    evmEl.textContent = lastEvmPercent.toFixed(2) + " %";
+  }
+}
+
+function updateEvmSparkLabel(mode) {
+  const labelEl = document.getElementById("evmSparkLabel");
+  if (!labelEl) return;
+  labelEl.textContent = (mode === "freq")
+    ? "EVM per symbol (error vs frequency)"
+    : "EVM per symbol (current chunk)";
+}
+
+function setEvmPerSymbol(perSymbolPct) {
+  lastEvmPerSymbol = perSymbolPct; // null clears the chart
+  drawEvmSparkline();
+}
+
+function drawEvmSparkline() {
+  const canvas = document.getElementById("evmSparkline");
+  if (!canvas) return;
+  // Match the backing pixel buffer to the canvas's actual rendered size
+  // (it has no fixed width/height attributes; its size comes from flex layout).
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const targetW = Math.max(1, Math.round(rect.width * dpr));
+  const targetH = Math.max(1, Math.round(rect.height * dpr));
+  if (canvas.width !== targetW || canvas.height !== targetH) {
+    canvas.width = targetW;
+    canvas.height = targetH;
+  }
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const minEl = document.getElementById("evmSparkMin");
+  const maxEl = document.getElementById("evmSparkMax");
+
+  const n = lastEvmPerSymbol ? lastEvmPerSymbol.length : 0;
+  if (n < 2) {
+    if (minEl) minEl.textContent = "—";
+    if (maxEl) maxEl.textContent = "—";
+    return;
+  }
+
+  // Convert to the currently selected display unit for plotting
+  const vals = (evmUnit === "db")
+    ? Array.from(lastEvmPerSymbol, p => 20 * Math.log10(Math.max(p, 1e-6) / 100))
+    : Array.from(lastEvmPerSymbol);
+
+  const minV = Math.min(...vals);
+  const maxV = Math.max(...vals);
+  const range = (maxV - minV) || 1; // avoid divide-by-zero on a flat line
+
+  const pad = 4 * dpr;
+  const plotW = w - pad * 2;
+  const plotH = h - pad * 2;
+
+  ctx.strokeStyle = "#00ff99";
+  ctx.lineWidth = 1 * dpr;
+  ctx.globalAlpha = 0.85;
+  ctx.beginPath();
+  for (let idx = 0; idx < n; idx++) {
+    const x = pad + (idx / (n - 1)) * plotW;
+    const yNorm = (vals[idx] - minV) / range; // 0 = min, 1 = max
+    const y = pad + (1 - yNorm) * plotH;
+    if (idx === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  const unitSuffix = evmUnit === "db" ? " dB" : " %";
+  if (minEl) minEl.textContent = minV.toFixed(1) + unitSuffix;
+  if (maxEl) maxEl.textContent = maxV.toFixed(1) + unitSuffix;
+}
+
+// Square QAM only (M = 4, 16, 64, 256, ...). Levels are symmetric odd integers
+// (..., -3, -1, 1, 3, ...) normalized so average symbol power = 1, matching
+// a unit-power-normalized demodulator output.
+function idealQAMPoints(M) {
+  const side = Math.round(Math.sqrt(M));
+  if (side * side !== M || side < 2) return null; // not a square QAM order
+
+  const levels = [];
+  for (let k = 0; k < side; k++) levels.push(2 * k - (side - 1)); // e.g. side=4 -> -3,-1,1,3
+
+  // Average power of an unnormalized square QAM constellation = 2*(M-1)/3
+  const avgPower = 2 * (M - 1) / 3;
+  const norm = Math.sqrt(avgPower);
+
+  const xs = [], ys = [];
+  for (const i of levels) {
+    for (const q of levels) {
+      xs.push(i / norm);
+      ys.push(q / norm);
+    }
+  }
+  return { x: xs, y: ys };
+}
+
+function refTrace() {
+  const pts = (showRefPoints && currentQAM_M) ? idealQAMPoints(currentQAM_M) : null;
+  if (!pts) return { x:[], y:[], mode:"markers", type:"scatter", marker:{size:1} };
+  return {
+    x: pts.x, y: pts.y,
+    mode:"markers", type:"scatter",
+    marker:{ size:9, symbol:"cross-thin", color:"#f59e0b",
+              line:{color:"#f59e0b", width:1} },
+    hoverinfo:"skip",
+    showlegend:false,
+  };
+}
+
 window.onload = async () => {
 let running=true;
 let currentFs=null;
@@ -536,8 +697,11 @@ Plotly.newPlot("plot",
 spectrumLayout
 );
 
-Plotly.newPlot("constellation",
-[{x:[],y:[],mode:"markers",marker:{size:3,color:"#3b82f6"},type:"scattergl"}],
+Plotly.newPlot("constellationPlot",
+[
+  {x:[],y:[],mode:"markers",marker:{size:3,color:"#3b82f6"},type:"scattergl",showlegend:false},
+  refTrace(),
+],
 constellationLayout
 );
 
@@ -656,21 +820,24 @@ const DEMOD_DEFS = {
 async function loadDemod() {
   const res = await fetch("http://localhost:8000/rf/demodulator");
   const d   = await res.json();           // null when none active
-  const strip = document.getElementById("demodList");
-  strip.querySelectorAll(".demodRow").forEach(el => el.remove());
-  document.getElementById("addDemodBtn").style.display = d ? "none" : "";
-  if (!d) return;
+  currentQAM_M = (d && d.type === "QAMDemodulator") ? d.M : null;
+  if (!d) {
+    lastEvmPercent = null;
+    renderEvmReadout();
+    setEvmPerSymbol(null);
+  }
 
-  // Normalise type key: backend returns "QAMDemodulator", keys are "QAM"
-  const shortType = d.type.replace("Demodulator","");
-  const pill = document.createElement("div");
-  pill.className = "demodRow";
-  pill.innerHTML =
-    `<span class="d-name">${d.type}</span>
-     <span class="d-detail">${demodSummary(d)}</span>
-     <button onclick="openDemodEdit()">Edit</button>
-     <button onclick="deleteDemod()">✕</button>`;
-  strip.appendChild(pill);
+  const sidebarBody = document.getElementById("constellationSidebarBody");
+  if (sidebarBody) {
+    sidebarBody.innerHTML = d
+      ? `<div style="margin-bottom:4px;"><span style="color:#a78bfa;">${d.type}</span></div>
+         <div>${demodSummary(d)}</div>
+         <div style="margin-top:10px;display:flex;gap:6px;">
+           <button onclick="openDemodEdit()" style="padding:4px 10px;font-size:11px;background:#1f2937;color:#ccc;border:1px solid #374151;border-radius:3px;cursor:pointer;">Edit</button>
+           <button onclick="deleteDemod()" style="padding:4px 10px;font-size:11px;background:#1f2937;color:#ccc;border:1px solid #374151;border-radius:3px;cursor:pointer;">Remove</button>
+         </div>`
+      : `No demodulator active.<br><button onclick="openDemodAdd()" style="margin-top:10px;padding:4px 10px;font-size:11px;background:#1f2937;color:#ccc;border:1px solid #374151;border-radius:3px;cursor:pointer;">+ Add demodulator</button>`;
+  }
 }
 
 function demodSummary(d) {
@@ -684,7 +851,7 @@ window.deleteDemod = async function() {
   await loadDemod();
 };
 
-function openDemodAdd() {
+window.openDemodAdd = function() {
   _modalMode   = "dem";
   _modalAction = "add";
   _modalEditId = null;
@@ -924,8 +1091,6 @@ document.getElementById("itemModal").addEventListener("click", e => {
 });
 document.getElementById("addComponentBtn").onclick = () => openAddModal("sig");
 document.getElementById("addBlockBtn").onclick     = () => openAddModal("blk");
-document.getElementById("addDemodBtn").onclick     = () => openDemodAdd();
-
 async function loadComponentDefs() {
   componentDefs = await fetch("http://localhost:8000/rf/component_types").then(r=>r.json());
 }
@@ -967,7 +1132,8 @@ center_freq:center,
 sample_rate:span,
 fft_size:fft,
 vbw:0.2,
-constellation_mode:document.getElementById("constellationMode").value
+constellation_mode:document.getElementById("constellationMode").value,
+demodulator_graph:document.getElementById("demodGraphMode").value
 })
 }
 );
@@ -992,14 +1158,33 @@ document.getElementById("runBtn").textContent=running?"STOP":"START";
 };
 
 document.getElementById("applyY").onclick=applySettings;
+document.getElementById("constellationMode").onchange = applySettings;
+document.getElementById("demodGraphMode").onchange = (e) => {
+  updateEvmSparkLabel(e.target.value);
+  applySettings();
+};
+document.getElementById("showRefPointsToggle").onchange = (e) => {
+  showRefPoints = e.target.checked;
+  const ref = refTrace();
+  Plotly.restyle("constellationPlot", { x: [ref.x], y: [ref.y] }, [1]);
+};
+document.getElementById("evmUnitToggle").onclick = (e) => {
+  evmUnit = (evmUnit === "pct") ? "db" : "pct";
+  e.target.textContent = (evmUnit === "pct") ? "%" : "dB";
+  renderEvmReadout();
+  drawEvmSparkline();
+};
 
 // ── Panel toggle ──────────────────────────────────────────────
 function resizeAllPanels() {
-  // Plotly panels
-  ["plot","constellation"].forEach(id => {
-    const el = document.getElementById(id);
-    if (el && el.classList.contains("visible")) Plotly.Plots.resize(id);
-  });
+  // Plotly panels (Plotly mount id may differ from the visibility-toggled panel id)
+  if (document.getElementById("plot").classList.contains("visible")) {
+    Plotly.Plots.resize("plot");
+  }
+  if (document.getElementById("constellation").classList.contains("visible")) {
+    Plotly.Plots.resize("constellationPlot");
+    drawEvmSparkline();
+  }
   // Waterfall canvas
   const wfc = document.getElementById("waterfallContainer");
   if (wfc && wfc.classList.contains("visible")) resizeWaterfallCanvas();
@@ -1041,16 +1226,47 @@ const dv = new DataView(buf);
 let off = 0;
 const timeSec = dv.getFloat64(off, true);
 off += 8;
+const packetType = dv.getUint32(off, true);
+off += 4;
 const constLen = dv.getUint32(off, true);
 off += 4;
-
 const power_db = new Float32Array(buf, off, status.fft_size);
 off += status.fft_size * 4;
 const iq_i = new Float32Array(buf, off, constLen);
 off += constLen * 4;
 const iq_q = new Float32Array(buf, off, constLen);
+off += constLen * 4;
 currentFs=status.sample_rate;
 const freqMHz=status.freqs.map(f=>f/1e6);
+
+let evmPercent = null;
+let evmPerSymbol = null;
+
+if (packetType === 2){
+  const error_vector_real = new Float32Array(buf, off, constLen);
+  off += constLen * 4;
+  const error_vector_imag = new Float32Array(buf, off, constLen);
+  off += constLen * 4;
+
+  // Per-symbol EVM% across this chunk — lets edge effects (timing
+  // mismatch, ISI / filter settling) show up as position-dependent
+  // structure rather than being averaged away.
+  evmPerSymbol = new Float32Array(constLen);
+  let errSumSq = 0;
+  for (let k = 0; k < constLen; k++) {
+    const sqErr = error_vector_real[k]*error_vector_real[k] + error_vector_imag[k]*error_vector_imag[k];
+    errSumSq += sqErr;
+    // Both rx_symbols and the ideal constellation are normalized to unit
+    // average power on the backend, so reference power is simply 1.
+    evmPerSymbol[k] = Math.sqrt(sqErr) * 100;
+  }
+  const errMeanSq = errSumSq / constLen;
+  evmPercent = Math.sqrt(errMeanSq) * 100;
+}
+
+lastEvmPercent = evmPercent;
+renderEvmReadout();
+setEvmPerSymbol(evmPerSymbol);
 
 autoscaleY(power_db);
 
@@ -1064,8 +1280,11 @@ const constellationVisible =
         .classList.contains("visible");
 if(constellationVisible){
 Plotly.react(
-"constellation",
-[{x:iq_i,y:iq_q,mode:"markers",marker:{size:3,color:"#3b82f6"},type:"scattergl"}],
+"constellationPlot",
+[
+  {x:iq_i,y:iq_q,mode:"markers",marker:{size:3,color:"#3b82f6"},type:"scattergl",showlegend:false},
+  refTrace(),
+],
 constellationLayout
 );
 }

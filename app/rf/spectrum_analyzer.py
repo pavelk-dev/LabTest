@@ -31,7 +31,33 @@ class SpectrumAnalyzer:
         self.freqs = np.fft.fftshift(np.fft.fftfreq(len(x), d=1 / iq.sample_rate))
 
         return power_dbm
+    def spectrum(
+        self,
+        data: np.ndarray,
+        sample_rate: float = 1.0,
+        remove_dc: bool = True,
+    ):
+        x = np.asarray(data)
 
+        if remove_dc:
+            x = x - np.mean(x)
+
+        fft = np.fft.fftshift(
+            np.fft.fft(x)
+        )
+
+        mag_db = 20 * np.log10(
+            np.abs(fft) + 1e-20
+        )
+
+        freqs = np.fft.fftshift(
+            np.fft.fftfreq(
+                len(x),
+                d=1 / sample_rate,
+            )
+        )
+
+        return freqs, mag_db
     def peak_power_db(self):
         _, p = self.fft()
         return float(np.max(p))
