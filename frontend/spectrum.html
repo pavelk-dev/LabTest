@@ -237,7 +237,10 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0f14;color:#ddd;fon
       </div>
 
       <div style="flex:1;min-height:0;display:flex;flex-direction:column;margin-top:8px;">
-        <canvas id="evmSparkline" style="width:100%;flex:1;min-height:0;background:#0b0f14;border:1px solid #1f2937;border-radius:3px;"></canvas>
+        <div style="position:relative;flex:1;min-height:0;">
+          <canvas id="evmSparkline" style="width:100%;height:100%;display:block;background:#0b0f14;border:1px solid #1f2937;border-radius:3px;"></canvas>
+          <div id="evmChartTooltip" style="display:none;position:absolute;pointer-events:none;background:rgba(0,0,0,0.85);border:1px solid #374151;border-radius:3px;padding:4px 7px;font-size:11px;font-family:monospace;color:#00ff99;white-space:nowrap;z-index:10;"></div>
+        </div>
         <div style="display:flex;justify-content:space-between;font-size:10px;color:#666;margin-top:2px;flex:0 0 auto;">
           <span id="evmSparkMin">—</span>
           <span id="evmSparkLabel" style="color:#888;">EVM per symbol (current chunk)</span>
@@ -491,7 +494,24 @@ let currentQAM_M = null;
 let showRefPoints = true;
 let evmUnit = "pct"; // "pct" | "db"
 let lastEvmPercent = null;
-let lastEvmPerSymbol = null; // Float32Array/array of per-symbol EVM% for the current chunk
+let lastEvmPerSymbol = null; // Float32Array/array of per-symbol EVM% for the current chunk (time mode)
+let lastEvmFreqData = null;  // { freqs: Float32Array(Hz), mag: Float32Array } for freq mode
+
+// Geometry from the most recent draw, used by the hover handler to map a
+// mouse pixel position back to the nearest data point without redoing
+// the chart's scaling math from scratch on every mousemove.
+let evmChartGeom = null; // { mode, dpr, padL, padT, plotW, plotH, xs:[], ys:[], values:[], unitSuffix }
+
+function evmChartTicks(minV, maxV, count) {
+  // Evenly spaced tick values between minV and maxV (inclusive), guarding
+  // against a degenerate zero-range chart.
+  if (maxV - minV < 1e-9) return [minV];
+  const ticks = [];
+  for (let i = 0; i < count; i++) {
+    ticks.push(minV + (maxV - minV) * (i / (count - 1)));
+  }
+  return ticks;
+}
 
 function renderEvmReadout() {
   const evmEl = document.getElementById("evmReadout");
@@ -509,7 +529,7 @@ function updateEvmSparkLabel(mode) {
   const labelEl = document.getElementById("evmSparkLabel");
   if (!labelEl) return;
   labelEl.textContent = (mode === "freq")
-    ? "EVM per symbol (error vs frequency)"
+    ? "Error spectrum (look for in-band spurs)"
     : "EVM per symbol (current chunk)";
 }
 
@@ -518,9 +538,16 @@ function setEvmPerSymbol(perSymbolPct) {
   drawEvmSparkline();
 }
 
+function setEvmFreqData(freqData) {
+  lastEvmFreqData = freqData; // null clears the chart
+  drawEvmSparkline();
+}
+
 function drawEvmSparkline() {
   const canvas = document.getElementById("evmSparkline");
   if (!canvas) return;
+  const mode = document.getElementById("demodGraphMode")?.value || "time";
+
   // Match the backing pixel buffer to the canvas's actual rendered size
   // (it has no fixed width/height attributes; its size comes from flex layout).
   const rect = canvas.getBoundingClientRect();
@@ -538,10 +565,19 @@ function drawEvmSparkline() {
   const minEl = document.getElementById("evmSparkMin");
   const maxEl = document.getElementById("evmSparkMax");
 
+  if (mode === "freq") {
+    drawEvmFreqChart(ctx, w, h, dpr, minEl, maxEl);
+  } else {
+    drawEvmTimeChart(ctx, w, h, dpr, minEl, maxEl);
+  }
+}
+
+function drawEvmTimeChart(ctx, w, h, dpr, minEl, maxEl) {
   const n = lastEvmPerSymbol ? lastEvmPerSymbol.length : 0;
   if (n < 2) {
     if (minEl) minEl.textContent = "—";
     if (maxEl) maxEl.textContent = "—";
+    evmChartGeom = null;
     return;
   }
 
@@ -554,27 +590,197 @@ function drawEvmSparkline() {
   const maxV = Math.max(...vals);
   const range = (maxV - minV) || 1; // avoid divide-by-zero on a flat line
 
-  const pad = 4 * dpr;
-  const plotW = w - pad * 2;
-  const plotH = h - pad * 2;
+  const padL = 8 * dpr, padR = 8 * dpr, padT = 6 * dpr, padB = 16 * dpr;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+
+  // Vertical gridlines + symbol-index ticks along the x axis
+  const tickCount = 6;
+  ctx.strokeStyle = "#1f2937";
+  ctx.lineWidth = 1 * dpr;
+  ctx.fillStyle = "#666";
+  ctx.font = `${10 * dpr}px monospace`;
+  ctx.textAlign = "center";
+  for (let i = 0; i < tickCount; i++) {
+    const frac = i / (tickCount - 1);
+    const x = padL + frac * plotW;
+    ctx.beginPath();
+    ctx.moveTo(x, padT);
+    ctx.lineTo(x, padT + plotH);
+    ctx.stroke();
+    const symIdx = Math.round(frac * (n - 1));
+    ctx.fillText(String(symIdx), x, h - 3 * dpr);
+  }
+
+  const unitSuffix = evmUnit === "db" ? " dB" : " %";
+  const xs = [], values = [];
 
   ctx.strokeStyle = "#00ff99";
   ctx.lineWidth = 1 * dpr;
   ctx.globalAlpha = 0.85;
   ctx.beginPath();
   for (let idx = 0; idx < n; idx++) {
-    const x = pad + (idx / (n - 1)) * plotW;
+    const x = padL + (idx / (n - 1)) * plotW;
     const yNorm = (vals[idx] - minV) / range; // 0 = min, 1 = max
-    const y = pad + (1 - yNorm) * plotH;
+    const y = padT + (1 - yNorm) * plotH;
     if (idx === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
+    xs.push(x);
+    values.push(vals[idx]);
   }
   ctx.stroke();
   ctx.globalAlpha = 1;
 
-  const unitSuffix = evmUnit === "db" ? " dB" : " %";
   if (minEl) minEl.textContent = minV.toFixed(1) + unitSuffix;
   if (maxEl) maxEl.textContent = maxV.toFixed(1) + unitSuffix;
+
+  evmChartGeom = {
+    mode: "time", dpr, padL, padT, plotW, plotH,
+    xs, values, unitSuffix,
+    labelFor: (idx) => `Symbol ${idx}`,
+  };
+}
+
+function drawEvmFreqChart(ctx, w, h, dpr, minEl, maxEl) {
+  const n = lastEvmFreqData ? lastEvmFreqData.mag.length : 0;
+  if (n < 2) {
+    if (minEl) minEl.textContent = "—";
+    if (maxEl) maxEl.textContent = "—";
+    evmChartGeom = null;
+    return;
+  }
+
+  const freqs = lastEvmFreqData.freqs; // Hz, same length as mag
+  const mag   = lastEvmFreqData.mag;
+
+  // Plot magnitude in dB — spurs are far easier to spot on a log scale
+  // than on a linear one, same convention as the main spectrum view.
+  const magDb = Array.from(mag, m => 20 * Math.log10(Math.max(m, 1e-12)));
+
+  const minV = Math.min(...magDb);
+  const maxV = Math.max(...magDb);
+  const range = (maxV - minV) || 1;
+
+  const padL = 38 * dpr, padR = 8 * dpr, padT = 6 * dpr, padB = 16 * dpr;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+
+  // Sort by frequency once (FFT bin order may already be sorted, but
+  // fftshift-style outputs sometimes aren't) so the trace draws left-to-right.
+  const order = Array.from(freqs.keys()).sort((a, b) => freqs[a] - freqs[b]);
+  const fMin = freqs[order[0]];
+  const fMax = freqs[order[order.length - 1]];
+  const fRange = (fMax - fMin) || 1;
+
+  // Vertical gridlines + frequency tick labels (kHz)
+  const tickCount = 6;
+  ctx.strokeStyle = "#1f2937";
+  ctx.lineWidth = 1 * dpr;
+  ctx.fillStyle = "#666";
+  ctx.font = `${10 * dpr}px monospace`;
+  for (let i = 0; i < tickCount; i++) {
+    const frac = i / (tickCount - 1);
+    const x = padL + frac * plotW;
+    ctx.beginPath();
+    ctx.moveTo(x, padT);
+    ctx.lineTo(x, padT + plotH);
+    ctx.stroke();
+    const fVal = fMin + frac * fRange;
+    ctx.textAlign = (i === 0) ? "left" : (i === tickCount - 1) ? "right" : "center";
+    ctx.fillText((fVal / 1e3).toFixed(0) + "k", x, h - 3 * dpr);
+  }
+
+  // Horizontal gridlines + dB tick labels on the left
+  ctx.textAlign = "right";
+  const yTickCount = 4;
+  for (let i = 0; i < yTickCount; i++) {
+    const frac = i / (yTickCount - 1);
+    const y = padT + frac * plotH;
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(padL + plotW, y);
+    ctx.stroke();
+    const dbVal = maxV - frac * range;
+    ctx.fillText(dbVal.toFixed(0), padL - 4 * dpr, y + 3 * dpr);
+  }
+
+  const xs = [], values = [];
+
+  ctx.strokeStyle = "#f59e0b";
+  ctx.lineWidth = 1 * dpr;
+  ctx.globalAlpha = 0.9;
+  ctx.beginPath();
+  order.forEach((idx, i) => {
+    const x = padL + ((freqs[idx] - fMin) / fRange) * plotW;
+    const yNorm = (magDb[idx] - minV) / range;
+    const y = padT + (1 - yNorm) * plotH;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+    xs.push(x);
+    values.push({ freq: freqs[idx], db: magDb[idx] });
+  });
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // Zero-frequency reference line (carrier/DC), helps anchor spur offsets
+  if (fMin <= 0 && fMax >= 0) {
+    const x0 = padL + ((0 - fMin) / fRange) * plotW;
+    ctx.strokeStyle = "#4b5563";
+    ctx.lineWidth = 1 * dpr;
+    ctx.setLineDash([3 * dpr, 3 * dpr]);
+    ctx.beginPath();
+    ctx.moveTo(x0, padT);
+    ctx.lineTo(x0, padT + plotH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  if (minEl) minEl.textContent = minV.toFixed(1) + " dB";
+  if (maxEl) maxEl.textContent = maxV.toFixed(1) + " dB";
+
+  evmChartGeom = {
+    mode: "freq", dpr, padL, padT, plotW, plotH,
+    xs, values, unitSuffix: " dB",
+    labelFor: (i) => `${(values[i].freq / 1e3).toFixed(2)} kHz`,
+  };
+}
+
+function evmChartOnMouseMove(e) {
+  const canvas  = document.getElementById("evmSparkline");
+  const tooltip = document.getElementById("evmChartTooltip");
+  if (!canvas || !tooltip || !evmChartGeom) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const mouseX = (e.clientX - rect.left) * evmChartGeom.dpr;
+
+  // Nearest point by x-pixel position (xs is monotonically increasing
+  // for both chart modes, so a linear scan is fine for typical chunk sizes).
+  const xs = evmChartGeom.xs;
+  let nearest = 0, bestDist = Infinity;
+  for (let i = 0; i < xs.length; i++) {
+    const d = Math.abs(xs[i] - mouseX);
+    if (d < bestDist) { bestDist = d; nearest = i; }
+  }
+
+  const valueText = (evmChartGeom.mode === "freq")
+    ? evmChartGeom.values[nearest].db.toFixed(2) + evmChartGeom.unitSuffix
+    : evmChartGeom.values[nearest].toFixed(2) + evmChartGeom.unitSuffix;
+
+  tooltip.textContent = `${evmChartGeom.labelFor(nearest)}: ${valueText}`;
+  tooltip.style.display = "block";
+
+  // Position relative to the wrapper div (CSS pixels, not device pixels)
+  const cssX = xs[nearest] / evmChartGeom.dpr;
+  const wrapperW = rect.width;
+  const tooltipW = tooltip.offsetWidth || 100;
+  const left = Math.min(Math.max(cssX - tooltipW / 2, 2), wrapperW - tooltipW - 2);
+  tooltip.style.left = left + "px";
+  tooltip.style.top  = "4px";
+}
+
+function evmChartOnMouseLeave() {
+  const tooltip = document.getElementById("evmChartTooltip");
+  if (tooltip) tooltip.style.display = "none";
 }
 
 // Square QAM only (M = 4, 16, 64, 256, ...). Levels are symmetric odd integers
@@ -825,6 +1031,7 @@ async function loadDemod() {
     lastEvmPercent = null;
     renderEvmReadout();
     setEvmPerSymbol(null);
+    setEvmFreqData(null);
   }
 
   const sidebarBody = document.getElementById("constellationSidebarBody");
@@ -1161,8 +1368,17 @@ document.getElementById("applyY").onclick=applySettings;
 document.getElementById("constellationMode").onchange = applySettings;
 document.getElementById("demodGraphMode").onchange = (e) => {
   updateEvmSparkLabel(e.target.value);
+  // Clear the previous mode's buffer so switching back doesn't briefly
+  // show a stale frame from before the switch.
+  if (e.target.value === "freq") {
+    setEvmPerSymbol(null);
+  } else {
+    setEvmFreqData(null);
+  }
   applySettings();
 };
+document.getElementById("evmSparkline").addEventListener("mousemove", evmChartOnMouseMove);
+document.getElementById("evmSparkline").addEventListener("mouseleave", evmChartOnMouseLeave);
 document.getElementById("showRefPointsToggle").onchange = (e) => {
   showRefPoints = e.target.checked;
   const ref = refTrace();
@@ -1219,56 +1435,71 @@ await loadBlocks();
 await loadDemod();
 await loadStatus();
 ws.binaryType = "arraybuffer"
-ws.onmessage=(event)=>{
-if(!running) return;
-const buf = event.data;
-const dv = new DataView(buf);
-let off = 0;
-const timeSec = dv.getFloat64(off, true);
-off += 8;
-const packetType = dv.getUint32(off, true);
-off += 4;
-const constLen = dv.getUint32(off, true);
-off += 4;
-const power_db = new Float32Array(buf, off, status.fft_size);
-off += status.fft_size * 4;
-const iq_i = new Float32Array(buf, off, constLen);
-off += constLen * 4;
-const iq_q = new Float32Array(buf, off, constLen);
-off += constLen * 4;
-currentFs=status.sample_rate;
-const freqMHz=status.freqs.map(f=>f/1e6);
+let lastPhaseErrorDeg = null;
+let lastMeanEvmPct = null;
 
-let evmPercent = null;
-let evmPerSymbol = null;
+ws.onmessage = (event) => {
+  if (!running) return;
 
-if (packetType === 2){
-  const error_vector_real = new Float32Array(buf, off, constLen);
-  off += constLen * 4;
-  const error_vector_imag = new Float32Array(buf, off, constLen);
-  off += constLen * 4;
-
-  // Per-symbol EVM% across this chunk — lets edge effects (timing
-  // mismatch, ISI / filter settling) show up as position-dependent
-  // structure rather than being averaged away.
-  evmPerSymbol = new Float32Array(constLen);
-  let errSumSq = 0;
-  for (let k = 0; k < constLen; k++) {
-    const sqErr = error_vector_real[k]*error_vector_real[k] + error_vector_imag[k]*error_vector_imag[k];
-    errSumSq += sqErr;
-    // Both rx_symbols and the ideal constellation are normalized to unit
-    // average power on the backend, so reference power is simply 1.
-    evmPerSymbol[k] = Math.sqrt(sqErr) * 100;
+  // Scalar frame: small JSON text message
+  if (typeof event.data === "string") {
+    const scalars = JSON.parse(event.data);
+    lastTimeSec = scalars.time_sec;
+    lastPacketType = scalars.packet_type;
+    if (scalars.mean_evm_pct !== undefined) {
+      lastEvmPercent = scalars.mean_evm_pct;
+      renderEvmReadout();
+    }
+    if (scalars.mean_phase_error_deg !== undefined) {
+      lastPhaseErrorDeg = scalars.mean_phase_error_deg;
+      // wire into a readout once you add one
+    }
+    return;
   }
-  const errMeanSq = errSumSq / constLen;
-  evmPercent = Math.sqrt(errMeanSq) * 100;
-}
 
-lastEvmPercent = evmPercent;
-renderEvmReadout();
-setEvmPerSymbol(evmPerSymbol);
+  // Binary frame: arrays only
+  const buf = event.data;
+  const dv = new DataView(buf);
+  let off = 0;
+  const constLen = dv.getUint32(off, true);
+  off += 4;
 
-autoscaleY(power_db);
+  const power_db = new Float32Array(buf, off, status.fft_size);
+  off += status.fft_size * 4;
+  const iq_i = new Float32Array(buf, off, constLen);
+  off += constLen * 4;
+  const iq_q = new Float32Array(buf, off, constLen);
+  off += constLen * 4;
+  currentFs = status.sample_rate;
+  freqMHz = status.freqs.map(f => f / 1e6);
+
+  let evmPerSymbol = null;
+  let phaseErrorsDeg = null;
+  let evmFreqData = null;
+
+  const graphMode = document.getElementById("demodGraphMode")?.value || "time";
+
+  if (lastPacketType === 2 && graphMode === "time") {
+    const error_vector_real = new Float32Array(buf, off, constLen);
+    off += constLen * 4;
+    const error_vector_imag = new Float32Array(buf, off, constLen);
+    off += constLen * 4;
+    evmPerSymbol = new Float32Array(buf, off, constLen);
+    off += constLen * 4;
+    phaseErrorsDeg = new Float32Array(buf, off, constLen);
+    off += constLen * 4;
+  } else if (lastPacketType === 2 && graphMode === "freq") {
+    const error_freqs = new Float32Array(buf, off, constLen);
+    off += constLen * 4;
+    const error_mag = new Float32Array(buf, off, constLen);
+    off += constLen * 4;
+    evmFreqData = { freqs: error_freqs, mag: error_mag };
+  }
+
+  setEvmPerSymbol(evmPerSymbol);
+  setEvmFreqData(evmFreqData);
+
+  autoscaleY(power_db);
 
 Plotly.react(
 "plot",
@@ -1290,9 +1521,9 @@ constellationLayout
 }
 
 if(waterfallEnabled){
-    drawWaterfallRow(power_db, freqMHz, timeSec);
+    drawWaterfallRow(power_db, freqMHz, lastTimeSec);
 }
-};
+}
 };
 
 </script>

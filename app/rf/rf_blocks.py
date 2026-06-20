@@ -101,28 +101,39 @@ def apply_chain(blocks: list[RFBlock], data: IQData) -> IQData:
 
 class RFAmplifier(RFBlock):
     """
-    Memoryless 3rd-order complex baseband amplifier.
+    Rapp-model memoryless complex baseband amplifier.
 
     Model
     -----
-        y = a1·x + a3·x·|x|²
+        |y| = a1*|x| / (1 + (a1*|x| / A_sat)^(2p))^(1/2p)
+        y   = |y| * exp(j*angle(x))
 
-    a1 and a3 are derived from gain_db and p1db_in_dbm so that the
-    single-tone 1 dB compression point is exactly reproduced.
+    Unlike a bare cubic polynomial (y = a1*x + a3*x*|x|^2), this AM-AM
+    curve is monotonic and bounded for all input levels: gain rolls off
+    smoothly and |y| asymptotically approaches A_sat as |x| -> infinity.
+    A cubic-only model only approximates compression locally near P1dB;
+    driven further into saturation, its instantaneous gain term
+    (a1 + a3*|x|^2) crosses zero and the |.| in gain_compression_db then
+    reports an unphysical recovery/runaway in gain instead of continued
+    compression. The Rapp model has no such failure mode at any drive level.
 
-    OIP3 (informational) ≈ P1dB_out + 9.6 dB for a memoryless amplifier.
+    a1 and A_sat are derived from gain_db and p1db_in_dbm so that the
+    single-tone 1 dB compression point is exactly reproduced, same
+    contract as the original cubic implementation.
+
+    OIP3 (informational) ~ P1dB_out + 9.6 dB for a memoryless amplifier.
 
     Parameters
     ----------
     gain_db : float
-        Small-signal power gain in dB.
+        Small-signal voltage gain in dB.
     p1db_in_dbm : float
         Input-referred 1 dB compression point in dBm.
     oip3_dbm : float | None
-        Output IP3 in dBm — stored for reference only.
+        Output IP3 in dBm -- stored for reference only.
         If None it is estimated as P1dB_out + 9.6 dB.
     noise_figure_db : float
-        Noise figure in dB.  0 = noiseless.
+        Noise figure in dB. 0 = noiseless.
     name : str
     """
 
@@ -132,6 +143,8 @@ class RFAmplifier(RFBlock):
         {"name": "oip3_dbm",        "label": "OIP3",        "unit": "dBm", "default": 33.0},
         {"name": "noise_figure_db", "label": "NF",          "unit": "dB",  "default": 5.0},
     ]
+
+    RAPP_P = 2.0  # AM-AM knee sharpness; higher = sharper/harder saturation
 
     def __init__(
         self,
@@ -146,34 +159,40 @@ class RFAmplifier(RFBlock):
         self.noise_figure_db = noise_figure_db
         self.name            = name
 
-        # Voltage gain (normalised, no impedance)
+        # Small-signal voltage gain (normalised, no impedance)
         self.a1 = 10 ** (gain_db / 20)
 
-        # Derive a3 from the single-tone 1dBCP condition:
-        #   |a1 + a3·A²| = a1·10^(-1/20)  at A = rms_amplitude(p1db_in)
-        # Since power_mw = A_rms² and peak = sqrt(2)·A_rms for a sinusoid:
-        #   A_peak² = 2 · 10^(p1db_in/10)
-        # Compression factor:
-        #   a1·(1 - 10^(-1/20)) = |a3|·A_peak²
-        A_peak_sq  = 2 * (10 ** (p1db_in_dbm / 10))
-        comp       = 1.0 - 10 ** (-1.0 / 20)   # ≈ 0.10875
-        self.a3    = -(self.a1 * comp) / A_peak_sq   # negative = compressive
+        # Solve for A_sat (saturated output peak-voltage ceiling) such that
+        # the Rapp curve gives exactly 1 dB of compression at p1db_in_dbm:
+        #   (1 + (a1*A_in/A_sat)^(2p))^(1/(2p)) = 10^(1/20)   at A_in = peak(p1db_in)
+        p = self.RAPP_P
+        A_in_peak = np.sqrt(2 * (10 ** (p1db_in_dbm / 10)))  # peak voltage amplitude
+        rhs = 10 ** (1.0 / 20)              # target compression factor (1 dB)
+        ratio = (rhs ** (2 * p) - 1.0) ** (1.0 / (2 * p))
+        self.A_sat = (self.a1 * A_in_peak) / ratio
 
-        # OIP3 — either supplied or estimated
+        # OIP3 -- either supplied or estimated
         p1db_out_dbm = p1db_in_dbm + gain_db
         self.oip3_dbm = oip3_dbm if oip3_dbm is not None else p1db_out_dbm + 9.6
 
         # Noise: additive at output, scaled per chunk by sample rate
-        # noise_power_density (normalised mW/Hz) = kT·(F-1) in 1-Ω system
-        # kT at 290 K in normalised mW/Hz ≈ 4e-18 (tiny — but keeps NF meaningful)
-        noise_factor         = 10 ** (noise_figure_db / 10)
-        kT_norm              = 4e-18          # normalised kT, mW/Hz
-        self.noise_psd       = kT_norm * (noise_factor - 1.0)
+        # noise_power_density (normalised mW/Hz) = kT*(F-1) in 1-ohm system
+        # kT at 290 K in normalised mW/Hz ~ 4e-18 (tiny, but keeps NF meaningful)
+        noise_factor   = 10 ** (noise_figure_db / 10)
+        kT_norm        = 4e-18
+        self.noise_psd = kT_norm * (noise_factor - 1.0)
 
     # ------------------------------------------------------------------
     def process(self, data: IQData) -> IQData:
-        x   = data.samples
-        y   = self.a1 * x + self.a3 * x * (np.abs(x) ** 2)
+        x     = data.samples
+        mag   = np.abs(x)
+        phase = np.angle(x)
+
+        p = self.RAPP_P
+        denom   = (1.0 + (self.a1 * mag / self.A_sat) ** (2 * p)) ** (1.0 / (2 * p))
+        out_mag = (self.a1 * mag) / denom
+
+        y = out_mag * np.exp(1j * phase)
 
         if self.noise_figure_db > 0:
             noise_power = self.noise_psd * data.sample_rate
@@ -185,10 +204,16 @@ class RFAmplifier(RFBlock):
 
     # ------------------------------------------------------------------
     def gain_compression_db(self, input_power_dbm: float) -> float:
-        """Gain compression in dB at the given input power."""
-        A_peak_sq      = 2 * (10 ** (input_power_dbm / 10))
-        gain_compressed = abs(self.a1 + self.a3 * A_peak_sq)
-        return float(20 * np.log10(self.a1 / (gain_compressed + 1e-30)))
+        """Gain compression in dB at the given input power.
+
+        Monotonically increasing and unbounded above 0 dB as input power
+        rises -- never crosses zero or goes negative the way the cubic
+        model's |a1 + a3*A^2| does once driven past its zero-gain point.
+        """
+        A_in  = np.sqrt(2 * (10 ** (input_power_dbm / 10)))
+        p     = self.RAPP_P
+        denom = (1.0 + (self.a1 * A_in / self.A_sat) ** (2 * p)) ** (1.0 / (2 * p))
+        return float(20 * np.log10(denom))
 
     def to_dict(self) -> dict:
         return dict(type="RFAmplifier", name=self.name,
@@ -202,8 +227,6 @@ class RFAmplifier(RFBlock):
                    oip3_dbm=d.get("oip3_dbm"),
                    noise_figure_db=d.get("noise_figure_db", 5.0),
                    name=d.get("name", "Amplifier"))
-
-
 # ---------------------------------------------------------------------------
 # BandpassFilter
 # ---------------------------------------------------------------------------

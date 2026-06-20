@@ -8,6 +8,7 @@ from app.rf.rf_blocks_registry import RF_BLOCK_REGISTRY
 from app.rf.demodulators import *
 import asyncio
 import struct
+import json
 
 from app.rf.rf_blocks import apply_chain
 
@@ -252,11 +253,8 @@ async def rf_stream(websocket: WebSocket):
     PACKET_DEMOD = 2
     packet_type = PACKET_RAW_IQ
     await websocket.accept()
-
     try:
-
         while True:
-
             recording = rf_session.latest_recording
             enabled_blocks = [
                 b["block"]
@@ -265,68 +263,74 @@ async def rf_stream(websocket: WebSocket):
             recording.iq = apply_chain(enabled_blocks, recording.iq)
             samples = recording.iq.samples
 
+            result = None  # DemodResult, only set in "symbols" mode
+
             if rf_session.constellation_mode == "raw":
                 rms = np.sqrt(np.mean(np.abs(samples) ** 2))
-
-                if rms > 0:
-                    normalized = samples / rms
-                else:
-                    normalized = samples
+                normalized = samples / rms if rms > 0 else samples
                 i_vis = normalized.real
                 q_vis = normalized.imag
                 packet_type = PACKET_RAW_IQ
+
             elif rf_session.constellation_mode == "symbols" and rf_session.demodulator is not None:
                 result = rf_session.demodulator.demodulate(recording.iq)
-
-
                 i_vis = result.recovered_symbols.real
                 q_vis = result.recovered_symbols.imag
-                error_vectors_real = result.error_vectors.real
-                error_vectors_imag = result.error_vectors.imag
                 packet_type = PACKET_DEMOD
 
             else:
-
                 i_vis = np.empty(0, dtype=np.float32)
                 q_vis = np.empty(0, dtype=np.float32)
 
             if recording is not None:
-                power_db = (rf_session.analyzer.fft(recording.iq, rf_session.window))
-                header = struct.pack("<dII", rf_session.synth.time_sec, packet_type, len(i_vis))
+                power_db = rf_session.analyzer.fft(recording.iq, rf_session.window)
+                scalars = {
+                    "time_sec": rf_session.synth.time_sec,
+                    "packet_type": packet_type,
+                }
+                if packet_type == PACKET_DEMOD and result is not None:
+                    scalars.update({
+                        "mean_evm_pct": result.mean_evm,
+                        "mean_phase_error_deg": result.mean_phase_error_deg,
+                    })
+                await websocket.send_text(json.dumps(scalars))
+
+                header = struct.pack("<I", len(i_vis))
                 payload = (
-                        header
-                        + power_db.astype(np.float32).tobytes()
-                        + i_vis.astype(np.float32).tobytes()
-                        + q_vis.astype(np.float32).tobytes()
+                    header
+                    + power_db.astype(np.float32).tobytes()
+                    + i_vis.astype(np.float32).tobytes()
+                    + q_vis.astype(np.float32).tobytes()
                 )
-                if packet_type == PACKET_DEMOD:
-                    if rf_session.demodulator is not None:
-                        if rf_session.demodulator_graph == "time":
-                            payload = (payload
-                                       + error_vectors_real.astype(np.float32).tobytes()
-                                       + error_vectors_imag.astype(np.float32).tobytes())
-                        elif rf_session.demodulator_graph == "freq":
-                            error_freqs, error_mag = rf_session.analyzer.spectrum(
-                                result.error_vectors,
-                                rf_session.demodulator.symbol_rate)
-                            payload = (payload
-                                       + error_freqs.astype(np.float32).tobytes()
-                                       + error_mag.astype(np.float32).tobytes())
+
+                if packet_type == PACKET_DEMOD and result is not None:
+                    if rf_session.demodulator_graph == "time":
+                        payload += (
+                            result.error_vectors.real.astype(np.float32).tobytes()
+                            + result.error_vectors.imag.astype(np.float32).tobytes()
+                            + result.evm_per_symbol.astype(np.float32).tobytes()
+                            + result.phase_errors_deg.astype(np.float32).tobytes()
+                        )
+                    elif rf_session.demodulator_graph == "freq":
+                        error_freqs, error_mag = rf_session.analyzer.spectrum(
+                            result.error_vectors,
+                            rf_session.demodulator.symbol_rate)
+                        payload += (
+                            error_freqs.astype(np.float32).tobytes()
+                            + error_mag.astype(np.float32).tobytes()
+                        )
+
                 await websocket.send_bytes(payload)
 
             await asyncio.sleep(frame_delta)
-
     except WebSocketDisconnect:
         print("client disconnected")
-
     except asyncio.CancelledError:
         print("stream cancelled")
-
     except Exception as e:
         print("stream error:", e)
-
     finally:
         try:
             await websocket.close()
-        except:
+        except Exception:
             pass
