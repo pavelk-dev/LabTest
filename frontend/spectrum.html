@@ -229,10 +229,30 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0f14;color:#ddd;fon
           <select id="demodGraphMode" style="background:#0b0f14;border:1px solid #374151;color:#ccc;padding:2px 5px;border-radius:3px;box-sizing:border-box;font-size:11px;">
             <option value="time">Error vs Time</option>
             <option value="freq">Error vs Freq</option>
+            <option value="phase">Phase Error vs Time</option>
+            <option value="phase_freq">Phase Error vs Freq</option>
           </select>
-          <span style="color:#ddd;font-weight:bold;font-size:11px;">EVM</span>
-          <button id="evmUnitToggle" style="padding:2px 7px;font-size:10px;background:#1f2937;color:#ccc;border:1px solid #374151;border-radius:3px;cursor:pointer;">%</button>
-          <span id="evmReadout" style="font-size:18px;color:#00ff99;font-family:monospace;white-space:nowrap;">—</span>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex:0 0 auto;flex-wrap:wrap;">
+        <button id="evmUnitToggle" style="padding:2px 7px;font-size:10px;background:#1f2937;color:#ccc;border:1px solid #374151;border-radius:3px;cursor:pointer;flex:0 0 auto;">%</button>
+
+        <div style="display:flex;flex-direction:column;line-height:1.1;">
+          <span style="font-size:9px;color:#888;">EVM mean</span>
+          <span id="evmReadout" style="font-size:15px;color:#00ff99;font-family:monospace;white-space:nowrap;">—</span>
+        </div>
+        <div style="display:flex;flex-direction:column;line-height:1.1;">
+          <span style="font-size:9px;color:#888;">EVM peak</span>
+          <span id="evmPeakReadout" style="font-size:15px;color:#00ff99;font-family:monospace;white-space:nowrap;">—</span>
+        </div>
+        <div style="display:flex;flex-direction:column;line-height:1.1;">
+          <span style="font-size:9px;color:#888;">Phase err mean</span>
+          <span id="phaseErrorReadout" style="font-size:15px;color:#60a5fa;font-family:monospace;white-space:nowrap;">—</span>
+        </div>
+        <div style="display:flex;flex-direction:column;line-height:1.1;">
+          <span style="font-size:9px;color:#888;">Phase err peak</span>
+          <span id="phaseErrorPeakReadout" style="font-size:15px;color:#60a5fa;font-family:monospace;white-space:nowrap;">—</span>
         </div>
       </div>
 
@@ -494,8 +514,18 @@ let currentQAM_M = null;
 let showRefPoints = true;
 let evmUnit = "pct"; // "pct" | "db"
 let lastEvmPercent = null;
+let lastEvmPeakPercent = null;
+let lastPhaseErrorDeg = null;
+let lastPhaseErrorPeakDeg = null;
 let lastEvmPerSymbol = null; // Float32Array/array of per-symbol EVM% for the current chunk (time mode)
+let lastPhaseErrorsDeg = null; // Float32Array of per-symbol phase error (degrees) for the current chunk
 let lastEvmFreqData = null;  // { freqs: Float32Array(Hz), mag: Float32Array } for freq mode
+let lastPhaseFreqData = null; // { freqs: Float32Array(Hz), mag: Float32Array(deg) } for phase_freq mode
+// FFT bin frequency axis (Hz) for the error spectrum. This is derived
+// purely from FFT size and symbol rate, so it only changes when settings
+// change -- not every frame -- and arrives via the JSON scalar message
+// rather than being resent as a binary array on every single frame.
+let lastErrorFreqAxis = null;
 
 // Geometry from the most recent draw, used by the hover handler to map a
 // mouse pixel position back to the nearest data point without redoing
@@ -514,23 +544,36 @@ function evmChartTicks(minV, maxV, count) {
 }
 
 function renderEvmReadout() {
-  const evmEl = document.getElementById("evmReadout");
-  if (!evmEl) return;
-  if (lastEvmPercent == null) { evmEl.textContent = "—"; return; }
-  if (evmUnit === "db") {
-    const evmDb = 20 * Math.log10(lastEvmPercent / 100);
-    evmEl.textContent = evmDb.toFixed(2) + " dB";
-  } else {
-    evmEl.textContent = lastEvmPercent.toFixed(2) + " %";
-  }
+  const evmEl     = document.getElementById("evmReadout");
+  const evmPeakEl = document.getElementById("evmPeakReadout");
+  const phaseEl     = document.getElementById("phaseErrorReadout");
+  const phasePeakEl = document.getElementById("phaseErrorPeakReadout");
+
+  const fmtEvm = (pct) => {
+    if (pct == null) return "—";
+    if (evmUnit === "db") {
+      return (20 * Math.log10(pct / 100)).toFixed(2) + " dB";
+    }
+    return pct.toFixed(2) + " %";
+  };
+  const fmtDeg = (deg) => (deg == null) ? "—" : deg.toFixed(2) + "°";
+
+  if (evmEl)       evmEl.textContent       = fmtEvm(lastEvmPercent);
+  if (evmPeakEl)   evmPeakEl.textContent   = fmtEvm(lastEvmPeakPercent);
+  if (phaseEl)      phaseEl.textContent      = fmtDeg(lastPhaseErrorDeg);
+  if (phasePeakEl)  phasePeakEl.textContent  = fmtDeg(lastPhaseErrorPeakDeg);
 }
 
 function updateEvmSparkLabel(mode) {
   const labelEl = document.getElementById("evmSparkLabel");
   if (!labelEl) return;
-  labelEl.textContent = (mode === "freq")
-    ? "Error spectrum (look for in-band spurs)"
-    : "EVM per symbol (current chunk)";
+  const labels = {
+    time: "EVM per symbol (current chunk)",
+    freq: "Error spectrum (look for in-band spurs)",
+    phase: "Phase error per symbol (current chunk)",
+    phase_freq: "Phase error spectrum (look for in-band spurs)",
+  };
+  labelEl.textContent = labels[mode] || labels.time;
 }
 
 function setEvmPerSymbol(perSymbolPct) {
@@ -538,8 +581,18 @@ function setEvmPerSymbol(perSymbolPct) {
   drawEvmSparkline();
 }
 
+function setPhaseErrorsDeg(phaseDeg) {
+  lastPhaseErrorsDeg = phaseDeg; // null clears the chart
+  drawEvmSparkline();
+}
+
 function setEvmFreqData(freqData) {
   lastEvmFreqData = freqData; // null clears the chart
+  drawEvmSparkline();
+}
+
+function setPhaseFreqData(freqData) {
+  lastPhaseFreqData = freqData; // null clears the chart
   drawEvmSparkline();
 }
 
@@ -567,6 +620,10 @@ function drawEvmSparkline() {
 
   if (mode === "freq") {
     drawEvmFreqChart(ctx, w, h, dpr, minEl, maxEl);
+  } else if (mode === "phase") {
+    drawPhaseTimeChart(ctx, w, h, dpr, minEl, maxEl);
+  } else if (mode === "phase_freq") {
+    drawPhaseFreqChart(ctx, w, h, dpr, minEl, maxEl);
   } else {
     drawEvmTimeChart(ctx, w, h, dpr, minEl, maxEl);
   }
@@ -641,9 +698,92 @@ function drawEvmTimeChart(ctx, w, h, dpr, minEl, maxEl) {
   };
 }
 
+function drawPhaseTimeChart(ctx, w, h, dpr, minEl, maxEl) {
+  const n = lastPhaseErrorsDeg ? lastPhaseErrorsDeg.length : 0;
+  if (n < 2) {
+    if (minEl) minEl.textContent = "—";
+    if (maxEl) maxEl.textContent = "—";
+    evmChartGeom = null;
+    return;
+  }
+
+  const vals = Array.from(lastPhaseErrorsDeg);
+
+  const minV = Math.min(...vals);
+  const maxV = Math.max(...vals);
+  // Keep the range symmetric around 0 so a flat-zero signal centers nicely
+  // and the zero-reference line below is meaningful at a glance.
+  const absMax = Math.max(Math.abs(minV), Math.abs(maxV)) || 1;
+  const plotMinV = -absMax, plotMaxV = absMax;
+  const range = (plotMaxV - plotMinV) || 1;
+
+  const padL = 8 * dpr, padR = 8 * dpr, padT = 6 * dpr, padB = 16 * dpr;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+
+  // Vertical gridlines + symbol-index ticks along the x axis
+  const tickCount = 6;
+  ctx.strokeStyle = "#1f2937";
+  ctx.lineWidth = 1 * dpr;
+  ctx.fillStyle = "#666";
+  ctx.font = `${10 * dpr}px monospace`;
+  ctx.textAlign = "center";
+  for (let i = 0; i < tickCount; i++) {
+    const frac = i / (tickCount - 1);
+    const x = padL + frac * plotW;
+    ctx.beginPath();
+    ctx.moveTo(x, padT);
+    ctx.lineTo(x, padT + plotH);
+    ctx.stroke();
+    const symIdx = Math.round(frac * (n - 1));
+    ctx.fillText(String(symIdx), x, h - 3 * dpr);
+  }
+
+  // Zero-degree reference line — a flat line here means no systematic
+  // phase offset; a steady ramp away from it signals carrier frequency
+  // offset rather than a fixed phase offset.
+  const y0 = padT + (1 - (0 - plotMinV) / range) * plotH;
+  ctx.strokeStyle = "#4b5563";
+  ctx.lineWidth = 1 * dpr;
+  ctx.setLineDash([3 * dpr, 3 * dpr]);
+  ctx.beginPath();
+  ctx.moveTo(padL, y0);
+  ctx.lineTo(padL + plotW, y0);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  const unitSuffix = "°";
+  const xs = [], values = [];
+
+  ctx.strokeStyle = "#60a5fa";
+  ctx.lineWidth = 1 * dpr;
+  ctx.globalAlpha = 0.85;
+  ctx.beginPath();
+  for (let idx = 0; idx < n; idx++) {
+    const x = padL + (idx / (n - 1)) * plotW;
+    const yNorm = (vals[idx] - plotMinV) / range;
+    const y = padT + (1 - yNorm) * plotH;
+    if (idx === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+    xs.push(x);
+    values.push(vals[idx]);
+  }
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  if (minEl) minEl.textContent = minV.toFixed(1) + unitSuffix;
+  if (maxEl) maxEl.textContent = maxV.toFixed(1) + unitSuffix;
+
+  evmChartGeom = {
+    mode: "phase", dpr, padL, padT, plotW, plotH,
+    xs, values, unitSuffix,
+    labelFor: (idx) => `Symbol ${idx}`,
+  };
+}
+
 function drawEvmFreqChart(ctx, w, h, dpr, minEl, maxEl) {
   const n = lastEvmFreqData ? lastEvmFreqData.mag.length : 0;
-  if (n < 2) {
+  if (n < 2 || !lastEvmFreqData.freqs) {
     if (minEl) minEl.textContent = "—";
     if (maxEl) maxEl.textContent = "—";
     evmChartGeom = null;
@@ -745,6 +885,110 @@ function drawEvmFreqChart(ctx, w, h, dpr, minEl, maxEl) {
   };
 }
 
+function drawPhaseFreqChart(ctx, w, h, dpr, minEl, maxEl) {
+  const n = lastPhaseFreqData ? lastPhaseFreqData.mag.length : 0;
+  if (n < 2 || !lastPhaseFreqData.freqs) {
+    if (minEl) minEl.textContent = "—";
+    if (maxEl) maxEl.textContent = "—";
+    evmChartGeom = null;
+    return;
+  }
+
+  const freqs = lastPhaseFreqData.freqs; // Hz, same length as mag
+  const deg   = lastPhaseFreqData.mag;   // degrees — no dB conversion, phase isn't a power quantity
+
+  const minV = Math.min(...deg);
+  const maxV = Math.max(...deg);
+  // Keep the range symmetric around 0, same rationale as the phase-vs-time
+  // chart: a flat-zero spectrum centers nicely and the zero line is meaningful.
+  const absMax = Math.max(Math.abs(minV), Math.abs(maxV)) || 1;
+  const plotMinV = -absMax, plotMaxV = absMax;
+  const range = (plotMaxV - plotMinV) || 1;
+
+  const padL = 30 * dpr, padR = 8 * dpr, padT = 6 * dpr, padB = 16 * dpr;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+
+  // Sort by frequency once (FFT bin order may already be sorted, but
+  // fftshift-style outputs sometimes aren't) so the trace draws left-to-right.
+  const order = Array.from(freqs.keys()).sort((a, b) => freqs[a] - freqs[b]);
+  const fMin = freqs[order[0]];
+  const fMax = freqs[order[order.length - 1]];
+  const fRange = (fMax - fMin) || 1;
+
+  // Vertical gridlines + frequency tick labels (kHz)
+  const tickCount = 6;
+  ctx.strokeStyle = "#1f2937";
+  ctx.lineWidth = 1 * dpr;
+  ctx.fillStyle = "#666";
+  ctx.font = `${10 * dpr}px monospace`;
+  for (let i = 0; i < tickCount; i++) {
+    const frac = i / (tickCount - 1);
+    const x = padL + frac * plotW;
+    ctx.beginPath();
+    ctx.moveTo(x, padT);
+    ctx.lineTo(x, padT + plotH);
+    ctx.stroke();
+    const fVal = fMin + frac * fRange;
+    ctx.textAlign = (i === 0) ? "left" : (i === tickCount - 1) ? "right" : "center";
+    ctx.fillText((fVal / 1e3).toFixed(0) + "k", x, h - 3 * dpr);
+  }
+
+  // Horizontal gridlines + degree tick labels on the left
+  ctx.textAlign = "right";
+  const yTickCount = 5; // odd count so the middle tick lands exactly on 0
+  for (let i = 0; i < yTickCount; i++) {
+    const frac = i / (yTickCount - 1);
+    const y = padT + frac * plotH;
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(padL + plotW, y);
+    ctx.stroke();
+    const degVal = plotMaxV - frac * range;
+    ctx.fillText(degVal.toFixed(0), padL - 4 * dpr, y + 3 * dpr);
+  }
+
+  const xs = [], values = [];
+
+  ctx.strokeStyle = "#60a5fa";
+  ctx.lineWidth = 1 * dpr;
+  ctx.globalAlpha = 0.9;
+  ctx.beginPath();
+  order.forEach((idx, i) => {
+    const x = padL + ((freqs[idx] - fMin) / fRange) * plotW;
+    const yNorm = (deg[idx] - plotMinV) / range;
+    const y = padT + (1 - yNorm) * plotH;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+    xs.push(x);
+    values.push({ freq: freqs[idx], deg: deg[idx] });
+  });
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // Zero-frequency reference line (carrier/DC), helps anchor spur offsets
+  if (fMin <= 0 && fMax >= 0) {
+    const x0 = padL + ((0 - fMin) / fRange) * plotW;
+    ctx.strokeStyle = "#4b5563";
+    ctx.lineWidth = 1 * dpr;
+    ctx.setLineDash([3 * dpr, 3 * dpr]);
+    ctx.beginPath();
+    ctx.moveTo(x0, padT);
+    ctx.lineTo(x0, padT + plotH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  if (minEl) minEl.textContent = minV.toFixed(1) + "°";
+  if (maxEl) maxEl.textContent = maxV.toFixed(1) + "°";
+
+  evmChartGeom = {
+    mode: "phase_freq", dpr, padL, padT, plotW, plotH,
+    xs, values, unitSuffix: "°",
+    labelFor: (i) => `${(values[i].freq / 1e3).toFixed(2)} kHz`,
+  };
+}
+
 function evmChartOnMouseMove(e) {
   const canvas  = document.getElementById("evmSparkline");
   const tooltip = document.getElementById("evmChartTooltip");
@@ -764,6 +1008,8 @@ function evmChartOnMouseMove(e) {
 
   const valueText = (evmChartGeom.mode === "freq")
     ? evmChartGeom.values[nearest].db.toFixed(2) + evmChartGeom.unitSuffix
+    : (evmChartGeom.mode === "phase_freq")
+    ? evmChartGeom.values[nearest].deg.toFixed(2) + evmChartGeom.unitSuffix
     : evmChartGeom.values[nearest].toFixed(2) + evmChartGeom.unitSuffix;
 
   tooltip.textContent = `${evmChartGeom.labelFor(nearest)}: ${valueText}`;
@@ -1029,9 +1275,14 @@ async function loadDemod() {
   currentQAM_M = (d && d.type === "QAMDemodulator") ? d.M : null;
   if (!d) {
     lastEvmPercent = null;
+    lastEvmPeakPercent = null;
+    lastPhaseErrorDeg = null;
+    lastPhaseErrorPeakDeg = null;
     renderEvmReadout();
     setEvmPerSymbol(null);
+    setPhaseErrorsDeg(null);
     setEvmFreqData(null);
+    setPhaseFreqData(null);
   }
 
   const sidebarBody = document.getElementById("constellationSidebarBody");
@@ -1368,13 +1619,13 @@ document.getElementById("applyY").onclick=applySettings;
 document.getElementById("constellationMode").onchange = applySettings;
 document.getElementById("demodGraphMode").onchange = (e) => {
   updateEvmSparkLabel(e.target.value);
-  // Clear the previous mode's buffer so switching back doesn't briefly
-  // show a stale frame from before the switch.
-  if (e.target.value === "freq") {
-    setEvmPerSymbol(null);
-  } else {
-    setEvmFreqData(null);
-  }
+  // Clear every buffer so switching modes never briefly shows a stale
+  // frame from before the switch; the next incoming frame repopulates
+  // whichever pair the new mode actually needs.
+  setEvmPerSymbol(null);
+  setPhaseErrorsDeg(null);
+  setEvmFreqData(null);
+  setPhaseFreqData(null);
   applySettings();
 };
 document.getElementById("evmSparkline").addEventListener("mousemove", evmChartOnMouseMove);
@@ -1435,8 +1686,6 @@ await loadBlocks();
 await loadDemod();
 await loadStatus();
 ws.binaryType = "arraybuffer"
-let lastPhaseErrorDeg = null;
-let lastMeanEvmPct = null;
 
 ws.onmessage = (event) => {
   if (!running) return;
@@ -1450,9 +1699,22 @@ ws.onmessage = (event) => {
       lastEvmPercent = scalars.mean_evm_pct;
       renderEvmReadout();
     }
+    if (scalars.peak_evm_pct !== undefined) {
+      lastEvmPeakPercent = scalars.peak_evm_pct;
+      renderEvmReadout();
+    }
     if (scalars.mean_phase_error_deg !== undefined) {
       lastPhaseErrorDeg = scalars.mean_phase_error_deg;
-      // wire into a readout once you add one
+      renderEvmReadout();
+    }
+    if (scalars.peak_phase_error_deg !== undefined) {
+      lastPhaseErrorPeakDeg = scalars.peak_phase_error_deg;
+      renderEvmReadout();
+    }
+    if (scalars.error_freq_axis !== undefined) {
+      // Only sent when it actually changes (FFT size / symbol rate),
+      // not every frame -- it's deterministic, not signal-dependent.
+      lastErrorFreqAxis = scalars.error_freq_axis;
     }
     return;
   }
@@ -1473,31 +1735,33 @@ ws.onmessage = (event) => {
   currentFs = status.sample_rate;
   freqMHz = status.freqs.map(f => f / 1e6);
 
-  let evmPerSymbol = null;
-  let phaseErrorsDeg = null;
   let evmFreqData = null;
+  let phaseFreqData = null;
 
   const graphMode = document.getElementById("demodGraphMode")?.value || "time";
 
   if (lastPacketType === 2 && graphMode === "time") {
-    const error_vector_real = new Float32Array(buf, off, constLen);
+    const evmPerSymbol = new Float32Array(buf, off, constLen);
     off += constLen * 4;
-    const error_vector_imag = new Float32Array(buf, off, constLen);
+    setEvmPerSymbol(evmPerSymbol);
+    setPhaseErrorsDeg(null);
+  } else if (lastPacketType === 2 && graphMode === "phase") {
+    const phaseErrorsDeg = new Float32Array(buf, off, constLen);
     off += constLen * 4;
-    evmPerSymbol = new Float32Array(buf, off, constLen);
-    off += constLen * 4;
-    phaseErrorsDeg = new Float32Array(buf, off, constLen);
-    off += constLen * 4;
+    setPhaseErrorsDeg(phaseErrorsDeg);
+    setEvmPerSymbol(null);
   } else if (lastPacketType === 2 && graphMode === "freq") {
-    const error_freqs = new Float32Array(buf, off, constLen);
-    off += constLen * 4;
     const error_mag = new Float32Array(buf, off, constLen);
     off += constLen * 4;
-    evmFreqData = { freqs: error_freqs, mag: error_mag };
+    evmFreqData = { freqs: lastErrorFreqAxis, mag: error_mag };
+  } else if (lastPacketType === 2 && graphMode === "phase_freq") {
+    const error_phase_mag = new Float32Array(buf, off, constLen);
+    off += constLen * 4;
+    phaseFreqData = { freqs: lastErrorFreqAxis, mag: error_phase_mag };
   }
 
-  setEvmPerSymbol(evmPerSymbol);
   setEvmFreqData(evmFreqData);
+  setPhaseFreqData(phaseFreqData);
 
   autoscaleY(power_db);
 

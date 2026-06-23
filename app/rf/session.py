@@ -23,5 +23,7 @@ class RFSession:
         self.constellation_mode = "raw"
         self.demodulator = None
         self.demodulator_graph = "time"
+        self.error_freq_axis = []
+        self.error_freq_axis_key = None
 
 rf_session = RFSession()

@@ -19,7 +19,9 @@ class DemodResult:
     phase_errors_deg : np.ndarray
     evm_per_symbol : np.ndarray
     mean_evm : float
+    peak_evm : float
     mean_phase_error_deg : float
+    peak_phase_error_deg : float
 class QAMDemodulator(Demodulator):
     def __init__(self, M: int = 16, symbol_rate : float = 1e6, pulse_shape:PulseShaper   = RootRaisedCosine(),):
         self.M = M
@@ -60,7 +62,7 @@ class QAMDemodulator(Demodulator):
         errors = []
         evm_per_symbol = []
         phase_errors_deg = []
-        mean_evm = 0.0  # accumulator, not None
+        mean_evm = 0.0
         for sample in rx_symbols:
             dist = np.abs(sample - self.constellation.symbols) ** 2
             sym = int(np.argmin(dist))
@@ -76,8 +78,9 @@ class QAMDemodulator(Demodulator):
 
         n = len(rx_symbols)
         mean_evm = np.sqrt(mean_evm / n) * 100 if n > 0 else 0.0
+        peak_evm = np.max(evm_per_symbol)
         mean_phase_error_deg = float(np.mean(phase_errors_deg)) if phase_errors_deg else 0.0
-
+        peak_phase_error_deg = np.max(np.abs(phase_errors_deg)) if phase_errors_deg else 0.0
         return DemodResult(
             bits=np.array(bits, dtype=np.uint8),
             symbols=np.array(symbol_indices, dtype=np.int32),
@@ -86,7 +89,9 @@ class QAMDemodulator(Demodulator):
             phase_errors_deg=np.array(phase_errors_deg, dtype=np.float32),
             evm_per_symbol=np.array(evm_per_symbol, dtype=np.float32),
             mean_evm=mean_evm,
+            peak_evm=peak_evm,
             mean_phase_error_deg=mean_phase_error_deg,
+            peak_phase_error_deg=peak_phase_error_deg
         )
 
     def to_dict(self) -> dict:
